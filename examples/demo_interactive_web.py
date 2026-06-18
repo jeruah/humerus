@@ -1,0 +1,680 @@
+"""Demo interactivo para seleccionar una semilla sobre el humero.
+
+Uso basico:
+
+    python3 examples/demo_interactive_web.py
+    python3 examples/demo_interactive_web.py --use-seed-index --seed-index 8
+    python3 examples/demo_interactive_web.py --seed 3.0 0.0 104.0
+    python3 examples/demo_interactive_web.py --stl data/sample_humeri/model.stl
+
+Por defecto abre una pagina local donde la semilla se escoge haciendo clic
+sobre un punto real de la superficie discretizada. El calculo de esfera se
+ejecuta en Python despues del clic.
+"""
+
+import argparse
+import json
+import sys
+import tempfile
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Dict, Tuple
+from urllib.parse import unquote
+
+import numpy as np
+import plotly.graph_objects as go
+from plotly.utils import PlotlyJSONEncoder
+from scipy.spatial import ConvexHull, QhullError
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.approximation.sphere import SphericalApproximator
+from src.audit.trail import AuditTrail
+from src.axis.longitudinal import AxisApproximator
+from src.mesh.discretizer import MeshDiscretizer
+from src.mesh.loader import STLLoader
+from src.visualization.interactive_web import InteractiveWeb3D
+
+
+def synthetic_humerus_points() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Crea una cabeza semi-esferica con diafisis cilindrica para pruebas."""
+    center = np.array([0.0, 0.0, 80.0])
+    radius = 25.0
+
+    theta = np.linspace(0.0, np.pi / 2.0, 24)
+    phi = np.linspace(0.0, 2.0 * np.pi, 48, endpoint=False)
+    theta_grid, phi_grid = np.meshgrid(theta, phi)
+    head = np.column_stack((
+        center[0] + radius * np.sin(theta_grid).ravel() * np.cos(phi_grid).ravel(),
+        center[1] + radius * np.sin(theta_grid).ravel() * np.sin(phi_grid).ravel(),
+        center[2] + radius * np.cos(theta_grid).ravel(),
+    ))
+    head_normals = head - center
+    head_normals = head_normals / np.linalg.norm(head_normals, axis=1)[:, None]
+
+    z = np.linspace(-217.6, 68.0, 160)
+    a = np.linspace(0.0, 2.0 * np.pi, 36, endpoint=False)
+    z_grid, a_grid = np.meshgrid(z, a)
+    shaft_radius = 8.0
+    shaft = np.column_stack((
+        shaft_radius * np.cos(a_grid).ravel(),
+        shaft_radius * np.sin(a_grid).ravel(),
+        z_grid.ravel(),
+    ))
+    shaft_normals = np.column_stack((
+        np.cos(a_grid).ravel(),
+        np.sin(a_grid).ravel(),
+        np.zeros(a_grid.size),
+    ))
+
+    points = np.vstack((head, shaft))
+    normals = np.vstack((head_normals, shaft_normals))
+    seed_candidates = head[::37]
+    return points, normals, seed_candidates
+
+
+def load_surface_from_stl(stl_path: str, samples: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Carga y discretiza un STL real."""
+    mesh = STLLoader.load(stl_path)
+    discretizer = MeshDiscretizer()
+    return discretizer.discretize_uniform(mesh.vertices, mesh.faces, samples, random_seed=42)
+
+
+def load_demo_surface(args: argparse.Namespace) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Carga superficie desde STL o, solo si se solicita, usa datos sinteticos."""
+    if args.stl:
+        surface_points, surface_normals = load_surface_from_stl(args.stl, args.samples)
+        seed_candidates = surface_points
+    elif args.synthetic_demo:
+        surface_points, surface_normals, seed_candidates = synthetic_humerus_points()
+    else:
+        raise ValueError("Selecciona un STL en la interfaz web o usa --stl/--synthetic-demo")
+    return surface_points, surface_normals, seed_candidates
+
+
+def choose_seed(args: argparse.Namespace, candidates: np.ndarray) -> np.ndarray:
+    """Escoge semilla por coordenadas explicitas o indice reproducible."""
+    if args.seed is not None:
+        return np.asarray(args.seed, dtype=float)
+
+    if len(candidates) == 0:
+        raise ValueError("No hay semillas candidatas; usa --seed x y z")
+
+    index = int(args.seed_index) % len(candidates)
+    return candidates[index]
+
+
+def sphere_surface_trace(center: np.ndarray, radius: float, name: str) -> go.Surface:
+    """Crea traza Plotly de la esfera ajustada como superficie."""
+    u = np.linspace(0, 2 * np.pi, 36)
+    v = np.linspace(0, np.pi, 24)
+    x = radius * np.outer(np.cos(u), np.sin(v)) + center[0]
+    y = radius * np.outer(np.sin(u), np.sin(v)) + center[1]
+    z = radius * np.outer(np.ones(np.size(u)), np.cos(v)) + center[2]
+    return go.Surface(
+        x=x,
+        y=y,
+        z=z,
+        name=name,
+        colorscale="Reds",
+        showscale=False,
+        opacity=0.45,
+        hoverinfo="skip",
+        meta={"resultTrace": True},
+    )
+
+
+def axis_traces(axis: Dict[str, Any]) -> list:
+    """Crea trazas Plotly para el eje longitudinal."""
+    origin = axis["origin"]
+    end = axis["distal_point"]
+    midpoint = (origin + end) / 2.0
+    length = float(axis["length"])
+    return [
+        go.Scatter3d(
+            x=[origin[0], end[0]],
+            y=[origin[1], end[1]],
+            z=[origin[2], end[2]],
+            mode="lines",
+            name="Eje longitudinal PCA",
+            line=dict(color="red", width=8),
+            hoverinfo="skip",
+            meta={"resultTrace": True},
+        ),
+        go.Scatter3d(
+            x=[midpoint[0]],
+            y=[midpoint[1]],
+            z=[midpoint[2]],
+            mode="text",
+            name="Longitud eje PCA",
+            text=[f"Eje PCA: {length:.2f} mm"],
+            textposition="middle right",
+            textfont=dict(color="darkred", size=13),
+            hoverinfo="skip",
+            showlegend=False,
+            meta={"resultTrace": True},
+        ),
+    ]
+
+
+def selected_seed_trace(seed: np.ndarray) -> go.Scatter3d:
+    """Crea marcador destacado para la semilla clicada."""
+    return go.Scatter3d(
+        x=[seed[0]],
+        y=[seed[1]],
+        z=[seed[2]],
+        mode="markers+text",
+        name="Semilla seleccionada",
+        marker=dict(size=11, color="gold", symbol="diamond"),
+        text=["Semilla"],
+        textposition="top center",
+        hoverinfo="text",
+        hovertext=[f"x={seed[0]:.4f}<br>y={seed[1]:.4f}<br>z={seed[2]:.4f}"],
+        meta={"resultTrace": True},
+    )
+
+
+def compute_from_seed(
+    seed: np.ndarray,
+    surface_points: np.ndarray,
+    surface_normals: np.ndarray,
+    initial_radius: float,
+    max_error: float,
+) -> Dict[str, Any]:
+    """Calcula esfera, eje y auditoria para una semilla de superficie."""
+    audit = AuditTrail("clicked_seed")
+    audit.validate_seed(seed, surface_points, curvature_threshold=0.1)
+
+    approximator = SphericalApproximator(max_iterations=30, convergence_threshold=1e-5)
+    sphere = approximator.approximate_from_seed(
+        seed,
+        surface_points,
+        surface_normals,
+        audit_trail=audit,
+        initial_radius=initial_radius,
+    )
+    audit.is_valid_approximation(sphere, max_error=max_error, surface_points=surface_points)
+    axis = AxisApproximator.compute_longitudinal_axis(surface_points)
+
+    return {
+        "seed": seed,
+        "sphere": sphere,
+        "axis": axis,
+        "sphere_center_inside_humerus": is_point_inside_surface_volume(sphere["center"], surface_points),
+        "audit": audit.get_report(),
+    }
+
+
+def is_point_inside_surface_volume(point: np.ndarray, surface_points: np.ndarray, tolerance: float = 1e-6) -> bool:
+    """
+    Estima si un punto está dentro del volumen del húmero usando la envolvente convexa.
+
+    Esto no reemplaza una prueba volumétrica exacta de malla cerrada, pero rechaza
+    centros claramente fuera del hueso y evita dibujar esferas absurdas.
+    """
+    points = np.asarray(surface_points, dtype=float)
+    point = np.asarray(point, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3 or point.shape != (3,):
+        return False
+    if len(points) < 4:
+        return False
+
+    try:
+        hull = ConvexHull(points)
+        equations = hull.equations
+        return bool(np.all(equations[:, :3] @ point + equations[:, 3] <= tolerance))
+    except QhullError:
+        mins = points.min(axis=0) - tolerance
+        maxs = points.max(axis=0) + tolerance
+        return bool(np.all(point >= mins) and np.all(point <= maxs))
+
+
+def surface_points_trace(surface_points: np.ndarray, name: str = "Superficie clicable") -> go.Scatter3d:
+    """Crea traza clicable para puntos de superficie."""
+    indices = np.arange(len(surface_points))
+    return go.Scatter3d(
+        x=surface_points[:, 0],
+        y=surface_points[:, 1],
+        z=surface_points[:, 2],
+        mode="markers",
+        name=name,
+        customdata=indices,
+        marker=dict(size=2, color="steelblue", opacity=0.72),
+        hovertemplate=(
+            "Punto %{customdata}<br>"
+            "x=%{x:.3f}<br>y=%{y:.3f}<br>z=%{z:.3f}"
+            "<extra>clic para usar semilla</extra>"
+        ),
+        meta={"surfaceTrace": True},
+    )
+
+
+def make_selection_figure(surface_points: np.ndarray | None = None) -> go.Figure:
+    """Crea figura inicial clicable con puntos de superficie."""
+    fig = go.Figure()
+    if surface_points is not None:
+        fig.add_trace(surface_points_trace(surface_points))
+    fig.update_layout(
+        title="Carga un STL y selecciona una semilla en la cabeza del humero",
+        scene=dict(
+            xaxis=dict(title="X (mm)"),
+            yaxis=dict(title="Y (mm)"),
+            zaxis=dict(title="Z (mm)"),
+            aspectmode="data",
+            camera=dict(eye=dict(x=1.5, y=1.5, z=1.3)),
+        ),
+        width=1200,
+        height=820,
+        showlegend=True,
+        hovermode="closest",
+    )
+    return fig
+
+
+def build_selection_html(fig: go.Figure) -> str:
+    """Construye HTML con manejador de clic y llamada a Python."""
+    fig_json = json.dumps(fig, cls=PlotlyJSONEncoder)
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Seleccion de semilla humeral</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    body {{ margin: 0; font-family: system-ui, sans-serif; background: #f6f7f8; color: #1f2933; }}
+    #bar {{ display: flex; align-items: center; gap: 12px; padding: 12px 18px; background: white; border-bottom: 1px solid #d9dee3; font-size: 14px; }}
+    #status {{ flex: 1; }}
+    #plot {{ width: 100vw; height: calc(100vh - 58px); }}
+    input[type=file] {{ max-width: 340px; }}
+    button {{ border: 1px solid #b9c2cc; background: #f8fafc; padding: 7px 10px; border-radius: 6px; cursor: pointer; }}
+    button:disabled {{ opacity: 0.55; cursor: default; }}
+    code {{ background: #eef1f4; padding: 2px 5px; border-radius: 4px; }}
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <input id="stlFile" type="file" accept=".stl,model/stl,application/sla">
+    <button id="uploadButton">Cargar STL</button>
+    <div id="status">
+      Selecciona un archivo STL. Luego haz clic sobre un punto real de la cabeza humeral para usarlo como semilla.
+    </div>
+  </div>
+  <div id="plot"></div>
+  <script>
+    const fig = {fig_json};
+    const plot = document.getElementById('plot');
+    const status = document.getElementById('status');
+    const fileInput = document.getElementById('stlFile');
+    const uploadButton = document.getElementById('uploadButton');
+    let surfaceLoaded = fig.data.length > 0;
+    let resultTraceCount = 0;
+    let surfaceTraceCount = fig.data.length;
+
+    Plotly.newPlot(plot, fig.data, fig.layout, {{responsive: true}});
+
+    function traceHasMeta(trace, key) {{
+      return trace && trace.meta && trace.meta[key] === true;
+    }}
+
+    function resultTraceIndices() {{
+      return plot.data
+        .map((trace, index) => traceHasMeta(trace, 'resultTrace') ? index : -1)
+        .filter(index => index >= 0);
+    }}
+
+    function surfaceTraceIndices() {{
+      return plot.data
+        .map((trace, index) => traceHasMeta(trace, 'surfaceTrace') ? index : -1)
+        .filter(index => index >= 0);
+    }}
+
+    function clearResultTraces() {{
+      const indices = resultTraceIndices().sort((a, b) => b - a);
+      if (indices.length > 0) {{
+        Plotly.deleteTraces(plot, indices);
+        resultTraceCount = 0;
+      }}
+    }}
+
+    function keepSurfaceSelectable() {{
+      const indices = surfaceTraceIndices();
+      if (indices.length > 0 && indices[indices.length - 1] !== plot.data.length - 1) {{
+        Plotly.moveTraces(plot, indices, plot.data.length - indices.length);
+      }}
+    }}
+
+    uploadButton.addEventListener('click', async function() {{
+      const file = fileInput.files[0];
+      if (!file) {{
+        status.textContent = 'Selecciona primero un archivo STL.';
+        return;
+      }}
+
+      uploadButton.disabled = true;
+      status.innerHTML = `Cargando <code>${{file.name}}</code> y discretizando superficie...`;
+
+      try {{
+        const response = await fetch('/upload-stl', {{
+          method: 'POST',
+          headers: {{
+            'Content-Type': 'application/octet-stream',
+            'X-Filename': encodeURIComponent(file.name)
+          }},
+          body: await file.arrayBuffer()
+        }});
+        const result = await response.json();
+        if (!response.ok) {{
+          throw new Error(result.error || 'No se pudo cargar STL');
+        }}
+
+        clearResultTraces();
+        if (plot.data.length > 0) {{
+          Plotly.deleteTraces(plot, Array.from({{length: plot.data.length}}, (_, i) => i));
+        }}
+        Plotly.addTraces(plot, result.traces);
+        surfaceTraceCount = result.traces.length;
+        resultTraceCount = 0;
+        surfaceLoaded = true;
+        status.innerHTML =
+          `STL cargado: <code>${{result.filename}}</code> ` +
+          `Puntos: <code>${{result.points}}</code>. ` +
+          `Ahora haz clic en la cabeza humeral para usar ese punto como semilla.`;
+      }} catch (error) {{
+        status.textContent = `Error cargando STL: ${{error.message}}`;
+      }} finally {{
+        uploadButton.disabled = false;
+      }}
+    }});
+
+    plot.on('plotly_click', async function(event) {{
+      if (!surfaceLoaded) {{
+        status.textContent = 'Carga primero un STL para seleccionar una semilla real.';
+        return;
+      }}
+      const point = event.points[0];
+      const pointIndex = point.customdata;
+      if (pointIndex === undefined || pointIndex === null) {{
+        return;
+      }}
+      status.innerHTML = `Calculando esfera desde punto <code>${{pointIndex}}</code>...`;
+
+      try {{
+        const response = await fetch('/approximate', {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{point_index: pointIndex}})
+        }});
+        const result = await response.json();
+        if (!response.ok) {{
+          throw new Error(result.error || 'Error desconocido');
+        }}
+
+        clearResultTraces();
+        Plotly.addTraces(plot, result.traces);
+        resultTraceCount = resultTraceIndices().length;
+        keepSurfaceSelectable();
+
+        status.innerHTML =
+          `Semilla: <code>[${{result.seed.map(v => v.toFixed(3)).join(', ')}}]</code> ` +
+          `Centro: <code>[${{result.center.map(v => v.toFixed(3)).join(', ')}}]</code> ` +
+          `Radio: <code>${{result.radius.toFixed(3)}} mm</code> ` +
+          `Eje PCA: <code>${{result.axis_length.toFixed(3)}} mm</code> ` +
+          `Diam/Long: <code>${{result.diameter_length_percentage.toFixed(2)}}%</code> ` +
+          `RMSE: <code>${{result.error.toFixed(4)}} mm</code> ` +
+          `Valida: <code>${{result.valid}}</code> ` +
+          `Dibujo esfera: <code>${{result.sphere_drawn ? 'si' : 'omitido'}}</code>`;
+      }} catch (error) {{
+        status.textContent = `No se pudo aproximar la esfera: ${{error.message}}`;
+      }}
+    }});
+  </script>
+</body>
+</html>"""
+
+
+def result_to_response(
+    result: Dict[str, Any],
+    max_visual_diameter_length_ratio: float = 1.0
+) -> Dict[str, Any]:
+    """Convierte resultado Python a respuesta JSON para el navegador."""
+    seed = result["seed"]
+    sphere = result["sphere"]
+    axis = result["axis"]
+    axis_length = float(axis["length"])
+    diameter_length_ratio = (2.0 * float(sphere["radius"]) / axis_length) if axis_length > 0 else float("nan")
+    sphere_center_inside_humerus = bool(result.get("sphere_center_inside_humerus", True))
+    sphere_drawn = bool(
+        np.isfinite(diameter_length_ratio)
+        and diameter_length_ratio <= max_visual_diameter_length_ratio
+        and sphere_center_inside_humerus
+    )
+    traces = [
+        selected_seed_trace(seed),
+        *axis_traces(axis),
+    ]
+    if sphere_drawn:
+        traces.insert(
+            1,
+            sphere_surface_trace(
+                sphere["center"],
+                sphere["radius"],
+                f"Esfera RMSE={sphere['error']:.3f}mm",
+            ),
+        )
+
+    visual_reason = "drawn"
+    if not sphere_drawn:
+        if not sphere_center_inside_humerus:
+            visual_reason = "sphere center is outside the approximated humerus volume"
+        elif not np.isfinite(diameter_length_ratio):
+            visual_reason = "diameter_length_ratio is not finite"
+        else:
+            visual_reason = (
+                f"diameter_length_ratio {diameter_length_ratio:.4f} exceeds "
+                f"visual threshold {max_visual_diameter_length_ratio:.4f}"
+            )
+    return {
+        "seed": seed.tolist(),
+        "center": sphere["center"].tolist(),
+        "radius": float(sphere["radius"]),
+        "error": float(sphere["error"]),
+        "iterations": int(sphere["iterations"]),
+        "converged": bool(sphere["converged"]),
+        "axis_length": axis_length,
+        "diameter_length_ratio": diameter_length_ratio,
+        "diameter_length_percentage": 100.0 * diameter_length_ratio,
+        "sphere_center_inside_humerus": sphere_center_inside_humerus,
+        "sphere_drawn": sphere_drawn,
+        "sphere_visual_reason": visual_reason,
+        "max_visual_diameter_length_ratio": float(max_visual_diameter_length_ratio),
+        "valid": bool(result["audit"]["final_valid"]),
+        "traces": json.loads(json.dumps(traces, cls=PlotlyJSONEncoder)),
+    }
+
+
+def surface_to_response(filename: str, surface_points: np.ndarray) -> Dict[str, Any]:
+    """Convierte una superficie cargada en respuesta JSON para Plotly."""
+    traces = [surface_points_trace(surface_points, name=f"Superficie STL: {filename}")]
+    return {
+        "filename": filename,
+        "points": int(len(surface_points)),
+        "traces": json.loads(json.dumps(traces, cls=PlotlyJSONEncoder)),
+    }
+
+
+def load_surface_from_upload(filename: str, data: bytes, samples: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Carga un STL recibido desde el navegador."""
+    suffix = Path(filename).suffix or ".stl"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
+        tmp.write(data)
+        tmp.flush()
+        return load_surface_from_stl(tmp.name, samples)
+
+
+def run_selection_server(args: argparse.Namespace) -> None:
+    """Sirve una pagina local para seleccionar semilla con clic."""
+    state: Dict[str, Any] = {
+        "surface_points": None,
+        "surface_normals": None,
+        "filename": None,
+    }
+    if args.stl or args.synthetic_demo:
+        surface_points, surface_normals, _ = load_demo_surface(args)
+        state["surface_points"] = surface_points
+        state["surface_normals"] = surface_normals
+        state["filename"] = Path(args.stl).name if args.stl else "synthetic-demo"
+
+    fig = make_selection_figure(state["surface_points"])
+    html = build_selection_html(fig).encode("utf-8")
+
+    class SelectionHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *handler_args: Any) -> None:
+            return
+
+        def do_GET(self) -> None:
+            if self.path not in ("/", "/index.html"):
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.end_headers()
+            self.wfile.write(html)
+
+        def do_POST(self) -> None:
+            if self.path == "/upload-stl":
+                self._handle_upload_stl()
+                return
+            if self.path == "/approximate":
+                self._handle_approximate()
+                return
+            self.send_error(404)
+
+        def _send_json(self, payload: Dict[str, Any], status_code: int = 200) -> None:
+            response = json.dumps(payload).encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def _handle_upload_stl(self) -> None:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0:
+                    raise ValueError("Archivo vacio")
+                filename = unquote(self.headers.get("X-Filename", "uploaded.stl"))
+                filename = Path(filename).name
+                data = self.rfile.read(length)
+                surface_points, surface_normals = load_surface_from_upload(filename, data, args.samples)
+                state["surface_points"] = surface_points
+                state["surface_normals"] = surface_normals
+                state["filename"] = filename
+                self._send_json(surface_to_response(filename, surface_points))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status_code=400)
+
+        def _handle_approximate(self) -> None:
+            try:
+                surface_points = state["surface_points"]
+                surface_normals = state["surface_normals"]
+                if surface_points is None or surface_normals is None:
+                    raise ValueError("Carga primero un STL")
+
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                point_index = int(payload["point_index"])
+                if point_index < 0 or point_index >= len(surface_points):
+                    raise ValueError("Indice de punto fuera de rango")
+
+                seed = surface_points[point_index]
+                result = compute_from_seed(
+                    seed,
+                    surface_points,
+                    surface_normals,
+                    args.initial_radius,
+                    args.max_error,
+                )
+                self._send_json(result_to_response(result, args.max_visual_diameter_length_ratio))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status_code=400)
+
+    server = ThreadingHTTPServer((args.host, args.port), SelectionHandler)
+    host, port = server.server_address
+    url = f"http://{host}:{port}/"
+    print(f"App local de seleccion STL: {url}")
+    print("Carga un STL en el navegador y haz clic en la cabeza del humero para calcular la esfera.")
+    if not args.no_browser:
+        webbrowser.open(url)
+    server.serve_forever()
+
+
+def run_deterministic_demo(args: argparse.Namespace) -> None:
+    """Ejecuta aproximacion de eje y esfera desde una semilla elegida."""
+    surface_points, surface_normals, seed_candidates = load_demo_surface(args)
+
+    seed = choose_seed(args, seed_candidates)
+    result = compute_from_seed(
+        seed,
+        surface_points,
+        surface_normals,
+        args.initial_radius,
+        args.max_error,
+    )
+    sphere = result["sphere"]
+    axis = result["axis"]
+
+    viz = InteractiveWeb3D(title="Semilla determinada: eje y esfera articular")
+    viz.plot_points(surface_points, name="Superficie discretizada", color="steelblue", size=2)
+    viz.plot_selected_seed(seed)
+    viz.plot_sphere(sphere["center"], sphere["radius"], name=f"Esfera ajustada RMSE={sphere['error']:.3f}mm")
+    viz.plot_axis(axis["origin"], axis["direction"], axis["length"], name="Eje longitudinal PCA")
+
+    print("\nResultado de la semilla seleccionada")
+    print(f"  Semilla: {seed.tolist()}")
+    print(f"  Centro esfera: {sphere['center'].round(4).tolist()}")
+    print(f"  Radio: {sphere['radius']:.4f} mm")
+    print(f"  RMSE: {sphere['error']:.4f} mm")
+    print(f"  Iteraciones: {sphere['iterations']} converged={sphere['converged']}")
+    print(f"  Eje origen: {axis['origin'].round(4).tolist()}")
+    print(f"  Eje direccion: {axis['direction'].round(4).tolist()}")
+    print(f"  Eje longitud: {axis['length']:.4f} mm")
+    print(f"  Diametro/longitud: {(2.0 * sphere['radius'] / axis['length']) * 100.0:.2f}%")
+    print(f"  Auditoria final: {result['audit']['final_valid']}")
+
+    if args.output:
+        viz.save(args.output)
+    if not args.no_browser:
+        viz.show()
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="App local para cargar STL, elegir semilla y aproximar esfera.")
+    parser.add_argument("--stl", help="Precarga un STL real. Tambien puedes cargarlo desde la interfaz web.")
+    parser.add_argument("--samples", type=int, default=8000, help="Puntos a muestrear del STL.")
+    parser.add_argument("--seed", nargs=3, type=float, help="Semilla explicita: x y z.")
+    parser.add_argument("--seed-index", type=int, default=10, help="Indice reproducible entre candidatas.")
+    parser.add_argument("--use-seed-index", action="store_true", help="No abre selector; usa --seed-index directamente.")
+    parser.add_argument("--synthetic-demo", action="store_true", help="Usa el humero sintetico solo para demos/tests.")
+    parser.add_argument("--initial-radius", type=float, default=25.0, help="Radio inicial de esfera en mm.")
+    parser.add_argument("--max-error", type=float, default=2.0, help="RMSE maximo aceptado por auditoria.")
+    parser.add_argument(
+        "--max-visual-diameter-length-ratio",
+        type=float,
+        default=1.0,
+        help="No dibuja la esfera si diametro/longitud supera este valor. Por defecto: diametro > longitud.",
+    )
+    parser.add_argument("--output", help="Guarda HTML en esta ruta.")
+    parser.add_argument("--no-browser", action="store_true", help="No abre navegador; util para tests.")
+    parser.add_argument("--host", default="127.0.0.1", help="Host del servidor de seleccion.")
+    parser.add_argument("--port", type=int, default=8765, help="Puerto del servidor de seleccion.")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    parsed_args = parse_args()
+    if parsed_args.seed is not None or parsed_args.use_seed_index or parsed_args.output:
+        run_deterministic_demo(parsed_args)
+    else:
+        run_selection_server(parsed_args)

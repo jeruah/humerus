@@ -93,7 +93,7 @@ class TestAuditTrail(unittest.TestCase):
         """Test validación de aproximación buena."""
         sphere = {
             'center': np.array([10.0, 20.0, 30.0]),
-            'radius': 25.0,
+            'radius': 22.0,
             'error': 0.5
         }
         
@@ -104,7 +104,7 @@ class TestAuditTrail(unittest.TestCase):
         """Test validación de aproximación con error alto."""
         sphere = {
             'center': np.array([10.0, 20.0, 30.0]),
-            'radius': 25.0,
+            'radius': 22.0,
             'error': 5.0  # Mayor que 2.0
         }
         
@@ -209,7 +209,7 @@ class TestAuditIntegration(unittest.TestCase):
             if is_valid:
                 sphere = {
                     'center': point + np.random.randn(3) * 0.1,
-                    'radius': 25.0 + np.random.randn() * 0.5,
+                    'radius': 22.0 + np.random.randn() * 0.5,
                     'error': 0.5 + np.random.rand() * 1.0
                 }
                 audit.is_valid_approximation(sphere)

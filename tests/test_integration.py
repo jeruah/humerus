@@ -33,7 +33,7 @@ class TestEndToEndWorkflow(unittest.TestCase):
         # 4. Registrar aproximación
         sphere = {
             'center': np.array([10.1, 20.1, 30.1]),
-            'radius': 25.0,
+            'radius': 22.0,
             'error': 0.8
         }
         
@@ -80,7 +80,7 @@ class TestEndToEndWorkflow(unittest.TestCase):
                 # Simular aproximación
                 sphere = {
                     'center': seed + np.random.randn(3) * 0.1,
-                    'radius': 25.0 + np.random.randn() * 0.3,
+                    'radius': 22.0 + np.random.randn() * 0.3,
                     'error': 0.5 + np.random.rand() * 0.5
                 }
                 
@@ -102,7 +102,7 @@ class TestEndToEndWorkflow(unittest.TestCase):
             
             sphere = {
                 'center': np.array([10.0 + i, 20.0, 30.0]),
-                'radius': 25.0 + i * 0.5,
+                'radius': 22.0 + i * 0.5,
                 'error': 0.5 + i * 0.1,
                 'valid': True
             }
@@ -171,7 +171,7 @@ class TestEndToEndWorkflow(unittest.TestCase):
                 # Aproximar
                 sphere = {
                     'center': seed,
-                    'radius': 25.0,
+                    'radius': 22.0,
                     'error': 0.5
                 }
                 

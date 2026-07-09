@@ -152,20 +152,34 @@ class AuditTrail:
         self,
         sphere: Dict[str, Any],
         max_error: float = 2.0,
-        min_radius: float = 20.0,
+        min_radius: float = 17.0,
         max_radius: float = 40.0,
-        bone_length: Optional[float] = None,
+        axis: Optional[Dict[str, Any]] = None,
         surface_points: Optional[np.ndarray] = None,
-        diameter_length_ratio: float = 0.155,
-        ratio_tolerance: float = 0.05
+        medial_direction: Optional[np.ndarray] = None,
+        posterior_direction: Optional[np.ndarray] = None,
+        reference_min_roc: float = 17.0,
+        reference_max_roc: float = 30.0,
+        reference_mean_roc: float = 22.5,
+        reference_sd_roc: float = 2.8,
+        reference_min_medial_offset: float = 1.0,
+        reference_max_medial_offset: float = 14.0,
+        reference_mean_medial_offset: float = 6.8,
+        reference_sd_medial_offset: float = 2.5,
+        reference_min_posterior_offset: float = 0.0,
+        reference_max_posterior_offset: float = 10.0,
+        reference_mean_posterior_offset: float = 2.0,
+        reference_sd_posterior_offset: float = 2.0,
+        enforce_morphology_reference: bool = False,
     ) -> bool:
         """
         Valida que una aproximación es aceptable.
         
         Criterios:
         1. Error cuadrático medio < max_error (default 2mm)
-        2. Radio en rango fisiológico [20, 40] mm
-        3. La correlacion con la longitud del hueso, diámetro/longitud ≈ 15.5% ± 5%
+        2. Radio de curvatura (ROC) en rango plausible [17, 40] mm
+        3. Si se entrega eje longitudinal, se auditan ROC/MO/PO contra
+           rangos de referencia, pero no invalidan salvo que se solicite.
         
         Parameters
         ----------
@@ -174,17 +188,21 @@ class AuditTrail:
         max_error : float
             Error máximo aceptable (mm)
         min_radius : float
-            Radio mínimo aceptable (mm)
+            ROC mínimo aceptable (mm)
         max_radius : float
-            Radio máximo aceptable (mm)
-        bone_length : float, optional
-            Longitud longitudinal del húmero en mm
+            ROC máximo aceptable (mm)
+        axis : Dict[str, Any], optional
+            Eje longitudinal con 'origin' y 'direction'
         surface_points : np.ndarray, optional
-            Superficie completa para estimar longitud si bone_length no se entrega
-        diameter_length_ratio : float
-            Relación esperada diámetro esfera / longitud hueso
-        ratio_tolerance : float
-            Tolerancia absoluta de la relación. 0.009 equivale a ±0.9 puntos porcentuales.
+            Superficie usada para inferir un marco transversal si no se entregan
+            direcciones anatómicas explícitas
+        medial_direction : np.ndarray, optional
+            Dirección medial aproximada. Se proyecta perpendicular al eje.
+        posterior_direction : np.ndarray, optional
+            Dirección posterior aproximada. Se proyecta perpendicular al eje.
+        enforce_morphology_reference : bool
+            Si True, los rangos promedio de ROC/MO/PO invalidan la aproximación.
+            Si False, solo se registran como indicadores de referencia.
         
         Returns
         -------
@@ -204,54 +222,258 @@ class AuditTrail:
         radius = sphere.get('radius', 0)
         if not (min_radius <= radius <= max_radius):
             is_valid = False
-            reasons.append(f"Radius {radius:.2f}mm outside range [{min_radius}, {max_radius}]")
+            reasons.append(f"ROC {radius:.2f}mm outside range [{min_radius}, {max_radius}]")
 
-        if bone_length is None and surface_points is not None:
-            bone_length = self._estimate_bone_length(surface_points)
+        morphology = None
+        reference_flags = None
+        reference_statistics = None
+        reference_reasons = []
+        if axis is not None:
+            try:
+                morphology = self.compute_morphological_metrics(
+                    sphere,
+                    axis,
+                    surface_points=surface_points,
+                    medial_direction=medial_direction,
+                    posterior_direction=posterior_direction,
+                )
+                medial_offset = morphology["medial_offset"]
+                posterior_offset = morphology["posterior_offset"]
+                roc = morphology["roc"]
 
-        ratio = None
-        if bone_length is not None:
-            bone_length = float(bone_length)
-            if bone_length <= 0:
-                is_valid = False
-                reasons.append("Bone length must be positive")
-            else:
-                diameter = 2.0 * float(radius)
-                ratio = diameter / bone_length
-                min_ratio = diameter_length_ratio - ratio_tolerance
-                max_ratio = diameter_length_ratio + ratio_tolerance
-                if not (min_ratio <= ratio <= max_ratio):
-                    is_valid = False
-                    reasons.append(
-                        f"Diameter/bone_length ratio {ratio:.4f} outside "
-                        f"[{min_ratio:.4f}, {max_ratio:.4f}]"
+                reference_flags = {
+                    "roc_in_reference": bool(reference_min_roc <= roc <= reference_max_roc),
+                    "medial_offset_in_reference": bool(
+                        reference_min_medial_offset <= medial_offset <= reference_max_medial_offset
+                    ),
+                    "posterior_offset_in_reference": bool(
+                        reference_min_posterior_offset <= posterior_offset <= reference_max_posterior_offset
+                    ),
+                }
+                reference_flags["all_in_reference"] = all(reference_flags.values())
+                reference_statistics = {
+                    "roc": self._reference_stat(
+                        roc,
+                        reference_min_roc,
+                        reference_max_roc,
+                        reference_mean_roc,
+                        reference_sd_roc,
+                    ),
+                    "medial_offset": self._reference_stat(
+                        medial_offset,
+                        reference_min_medial_offset,
+                        reference_max_medial_offset,
+                        reference_mean_medial_offset,
+                        reference_sd_medial_offset,
+                    ),
+                    "posterior_offset": self._reference_stat(
+                        posterior_offset,
+                        reference_min_posterior_offset,
+                        reference_max_posterior_offset,
+                        reference_mean_posterior_offset,
+                        reference_sd_posterior_offset,
+                    ),
+                }
+
+                if not reference_flags["roc_in_reference"]:
+                    reference_reasons.append(
+                        f"ROC {roc:.2f}mm outside reference "
+                        f"[{reference_min_roc}, {reference_max_roc}]"
                     )
+                if not reference_flags["medial_offset_in_reference"]:
+                    reference_reasons.append(
+                        f"Medial offset {medial_offset:.2f}mm outside reference "
+                        f"[{reference_min_medial_offset}, {reference_max_medial_offset}]"
+                    )
+                if not reference_flags["posterior_offset_in_reference"]:
+                    reference_reasons.append(
+                        f"Posterior offset {posterior_offset:.2f}mm outside reference "
+                        f"[{reference_min_posterior_offset}, {reference_max_posterior_offset}]"
+                    )
+
+                if enforce_morphology_reference and not reference_flags["all_in_reference"]:
+                    is_valid = False
+                    reasons.extend(reference_reasons)
+            except ValueError as exc:
+                is_valid = False
+                reasons.append(str(exc))
         
         self.validations['approximation_valid'] = is_valid
-        self.log_step("validate_approximation", {
+        data = {
             "valid": is_valid,
             "error": float(error),
-            "radius": float(radius),
-            "bone_length": float(bone_length) if bone_length is not None else None,
-            "diameter_length_ratio": float(ratio) if ratio is not None else None,
-            "expected_ratio": float(diameter_length_ratio),
-            "ratio_tolerance": float(ratio_tolerance),
+            "roc": float(radius),
+            "roc_plausibility_range": [float(min_radius), float(max_radius)],
+            "morphology_reference_ranges": {
+                "roc": [float(reference_min_roc), float(reference_max_roc)],
+                "medial_offset": [
+                    float(reference_min_medial_offset),
+                    float(reference_max_medial_offset),
+                ],
+                "posterior_offset": [
+                    float(reference_min_posterior_offset),
+                    float(reference_max_posterior_offset),
+                ],
+            },
+            "morphology_reference_statistics": {
+                "roc": {
+                    "mean": float(reference_mean_roc),
+                    "sd": float(reference_sd_roc),
+                },
+                "medial_offset": {
+                    "mean": float(reference_mean_medial_offset),
+                    "sd": float(reference_sd_medial_offset),
+                },
+                "posterior_offset": {
+                    "mean": float(reference_mean_posterior_offset),
+                    "sd": float(reference_sd_posterior_offset),
+                },
+            },
+            "enforce_morphology_reference": bool(enforce_morphology_reference),
             "reasons": reasons if not is_valid else ["OK"]
-        })
+        }
+        if morphology is not None:
+            data["morphology"] = morphology
+        if reference_flags is not None:
+            data["morphology_reference_flags"] = reference_flags
+            data["morphology_reference_values"] = reference_statistics
+            data["morphology_reference_reasons"] = reference_reasons if reference_reasons else ["OK"]
+        self.log_step("validate_approximation", data)
         
         return is_valid
 
     @staticmethod
-    def _estimate_bone_length(surface_points: np.ndarray) -> float:
-        """Estima longitud del hueso proyectando la nube sobre su eje PCA."""
-        points = np.asarray(surface_points, dtype=float)
-        if points.ndim != 2 or points.shape[1] != 3 or len(points) < 2:
-            raise ValueError("surface_points debe tener shape (N, 3)")
-        centered = points - points.mean(axis=0)
-        _, _, vh = np.linalg.svd(centered, full_matrices=False)
-        axis = vh[0]
-        projections = centered @ axis
-        return float(projections.max() - projections.min())
+    def _reference_stat(
+        value: float,
+        min_value: float,
+        max_value: float,
+        mean: float,
+        sd: float,
+    ) -> Dict[str, float]:
+        """Empaqueta valor, rango, media, desviación y z-score."""
+        sd = float(sd)
+        z_score = (float(value) - float(mean)) / sd if sd > 0 else float("nan")
+        return {
+            "value": float(value),
+            "min": float(min_value),
+            "max": float(max_value),
+            "mean": float(mean),
+            "sd": sd,
+            "z_score": float(z_score),
+        }
+
+    @staticmethod
+    def compute_morphological_metrics(
+        sphere: Dict[str, Any],
+        axis: Dict[str, Any],
+        surface_points: Optional[np.ndarray] = None,
+        medial_direction: Optional[np.ndarray] = None,
+        posterior_direction: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        """
+        Calcula medidas morfológicas de postprocesado.
+
+        El ROC es el radio de la esfera ajustada. Los offsets se calculan desde
+        el eje longitudinal hasta el centro de rotación de la cabeza humeral.
+        Si no se entregan direcciones anatómicas, se infiere un marco transversal
+        determinista perpendicular al eje.
+        """
+        center = np.asarray(sphere.get("center"), dtype=float)
+        origin = np.asarray(axis.get("origin"), dtype=float)
+        longitudinal = np.asarray(axis.get("direction"), dtype=float)
+
+        if center.shape != (3,):
+            raise ValueError("sphere['center'] debe tener shape (3,)")
+        if origin.shape != (3,) or longitudinal.shape != (3,):
+            raise ValueError("axis debe incluir 'origin' y 'direction' con shape (3,)")
+
+        norm = np.linalg.norm(longitudinal)
+        if norm <= 1e-12:
+            raise ValueError("axis['direction'] no puede ser vector cero")
+        longitudinal = longitudinal / norm
+
+        medial_unit, posterior_unit = AuditTrail._transverse_frame(
+            longitudinal,
+            medial_direction=medial_direction,
+            posterior_direction=posterior_direction,
+            surface_points=surface_points,
+        )
+
+        vec = center - origin
+        axial_position = float(np.dot(vec, longitudinal))
+        closest_axis_point = origin + axial_position * longitudinal
+        offset_vector = center - closest_axis_point
+        signed_medial = float(np.dot(offset_vector, medial_unit))
+        signed_posterior = float(np.dot(offset_vector, posterior_unit))
+
+        return {
+            "roc": float(sphere.get("radius", 0.0)),
+            "axis_point": closest_axis_point.tolist(),
+            "offset_vector": offset_vector.tolist(),
+            "total_offset": float(np.linalg.norm(offset_vector)),
+            "medial_offset": abs(signed_medial),
+            "posterior_offset": abs(signed_posterior),
+            "signed_medial_offset": signed_medial,
+            "signed_posterior_offset": signed_posterior,
+            "axial_position": axial_position,
+            "medial_direction": medial_unit.tolist(),
+            "posterior_direction": posterior_unit.tolist(),
+            "longitudinal_direction": longitudinal.tolist(),
+        }
+
+    @staticmethod
+    def _transverse_frame(
+        longitudinal: np.ndarray,
+        medial_direction: Optional[np.ndarray] = None,
+        posterior_direction: Optional[np.ndarray] = None,
+        surface_points: Optional[np.ndarray] = None,
+    ) -> tuple:
+        """Construye dos direcciones ortonormales perpendiculares al eje."""
+        medial = AuditTrail._project_perpendicular(medial_direction, longitudinal)
+        if medial is None and surface_points is not None:
+            points = np.asarray(surface_points, dtype=float)
+            if points.ndim == 2 and points.shape[1] == 3 and len(points) >= 3:
+                centered = points - points.mean(axis=0)
+                _, _, vh = np.linalg.svd(centered, full_matrices=False)
+                for candidate in vh[1:]:
+                    medial = AuditTrail._project_perpendicular(candidate, longitudinal)
+                    if medial is not None:
+                        break
+
+        if medial is None:
+            for candidate in (np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])):
+                medial = AuditTrail._project_perpendicular(candidate, longitudinal)
+                if medial is not None:
+                    break
+
+        posterior = AuditTrail._project_perpendicular(posterior_direction, longitudinal)
+        if posterior is not None:
+            posterior = posterior - np.dot(posterior, medial) * medial
+            posterior_norm = np.linalg.norm(posterior)
+            posterior = posterior / posterior_norm if posterior_norm > 1e-12 else None
+
+        if posterior is None:
+            posterior = np.cross(longitudinal, medial)
+            posterior = posterior / np.linalg.norm(posterior)
+
+        return medial, posterior
+
+    @staticmethod
+    def _project_perpendicular(
+        vector: Optional[np.ndarray],
+        axis: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        """Proyecta un vector al plano perpendicular del eje y lo normaliza."""
+        if vector is None:
+            return None
+        projected = np.asarray(vector, dtype=float)
+        if projected.shape != (3,):
+            return None
+        projected = projected - np.dot(projected, axis) * axis
+        norm = np.linalg.norm(projected)
+        if norm <= 1e-12:
+            return None
+        return projected / norm
     
     def get_report(self) -> Dict[str, Any]:
         """

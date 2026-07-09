@@ -34,13 +34,14 @@ from src.audit.trail import AuditTrail
 from src.axis.longitudinal import AxisApproximator
 from src.mesh.discretizer import MeshDiscretizer
 from src.mesh.loader import STLLoader
+from src.optimization.best_fit import HumeralHeadBestFitSearch
 from src.visualization.interactive_web import InteractiveWeb3D
 
 
 def synthetic_humerus_points() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Crea una cabeza semi-esferica con diafisis cilindrica para pruebas."""
-    center = np.array([0.0, 0.0, 80.0])
-    radius = 25.0
+    center = np.array([12.0, 3.0, 80.0])
+    radius = 22.0
 
     theta = np.linspace(0.0, np.pi / 2.0, 24)
     phi = np.linspace(0.0, 2.0 * np.pi, 48, endpoint=False)
@@ -175,6 +176,23 @@ def selected_seed_trace(seed: np.ndarray) -> go.Scatter3d:
     )
 
 
+def best_fit_seed_trace(seed: np.ndarray, score: float) -> go.Scatter3d:
+    """Crea marcador para la mejor semilla automática."""
+    return go.Scatter3d(
+        x=[seed[0]],
+        y=[seed[1]],
+        z=[seed[2]],
+        mode="markers+text",
+        name="Mejor semilla automática",
+        marker=dict(size=10, color="limegreen", symbol="circle"),
+        text=[f"Best fit {score:.3f}"],
+        textposition="bottom center",
+        hoverinfo="text",
+        hovertext=[f"score={score:.4f}<br>x={seed[0]:.4f}<br>y={seed[1]:.4f}<br>z={seed[2]:.4f}"],
+        meta={"resultTrace": True},
+    )
+
+
 def compute_from_seed(
     seed: np.ndarray,
     surface_points: np.ndarray,
@@ -194,8 +212,18 @@ def compute_from_seed(
         audit_trail=audit,
         initial_radius=initial_radius,
     )
-    audit.is_valid_approximation(sphere, max_error=max_error, surface_points=surface_points)
-    axis = AxisApproximator.compute_longitudinal_axis(surface_points)
+    axis = AxisApproximator.compute_longitudinal_axis(
+        surface_points,
+        method="diaphyseal_slice_axis",
+    )
+    audit.is_valid_approximation(
+        sphere,
+        max_error=max_error,
+        axis=axis,
+        surface_points=surface_points,
+        medial_direction=np.array([1.0, 0.0, 0.0]),
+        posterior_direction=np.array([0.0, 1.0, 0.0]),
+    )
 
     return {
         "seed": seed,
@@ -204,6 +232,92 @@ def compute_from_seed(
         "sphere_center_inside_humerus": is_point_inside_surface_volume(sphere["center"], surface_points),
         "audit": audit.get_report(),
     }
+
+
+def compute_best_fit_search(
+    surface_points: np.ndarray,
+    surface_normals: np.ndarray,
+    n_seeds: int,
+    top_k: int,
+    initial_radius: float,
+    max_error: float,
+) -> Dict[str, Any]:
+    """Ejecuta búsqueda automática de best-fit sphere."""
+    axis = AxisApproximator.compute_longitudinal_axis(
+        surface_points,
+        method="diaphyseal_slice_axis",
+    )
+    searcher = HumeralHeadBestFitSearch(
+        n_seeds=n_seeds,
+        top_k=top_k,
+        initial_radius=initial_radius,
+        max_error=max_error,
+        random_seed=42,
+    )
+    return searcher.search(surface_points, surface_normals, axis=axis)
+
+
+def best_fit_to_response(best_fit: Dict[str, Any]) -> Dict[str, Any]:
+    """Convierte ranking automático a JSON compacto."""
+    best = best_fit.get("best")
+    top_candidates = [candidate_to_response(candidate) for candidate in best_fit.get("top_candidates", [])]
+    payload = {
+        "head_region_count": int(best_fit.get("head_region_count", 0)),
+        "candidate_count": int(best_fit.get("candidate_count", 0)),
+        "valid_candidate_count": int(best_fit.get("valid_candidate_count", 0)),
+        "top_candidates": top_candidates,
+        "best": candidate_to_response(best) if best else None,
+    }
+    return payload
+
+
+def candidate_to_response(candidate: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    """Serializa un candidato evitando arrays numpy."""
+    if candidate is None:
+        return None
+    sphere = candidate.get("sphere")
+    payload = {
+        "seed_index": int(candidate.get("seed_index", -1)),
+        "seed": np.asarray(candidate.get("seed", np.zeros(3))).tolist(),
+        "score": float(candidate.get("score", float("inf"))),
+        "valid": bool(candidate.get("valid", False)),
+        "coverage_count": int(candidate.get("coverage_count", 0)),
+        "coverage_ratio": float(candidate.get("coverage_ratio", 0.0)),
+        "coverage_tolerance": float(candidate.get("coverage_tolerance", 0.0)),
+        "score_components": candidate.get("score_components", {}),
+        "morphology_z_scores": candidate.get("morphology_z_scores", {}),
+        "morphology_reference_flags": candidate.get("morphology_reference_flags", {}),
+        "morphology_reference_values": candidate.get("morphology_reference_values", {}),
+    }
+    if sphere is not None:
+        payload.update({
+            "center": np.asarray(sphere["center"]).tolist(),
+            "radius": float(sphere["radius"]),
+            "error": float(sphere["error"]),
+            "iterations": int(sphere.get("iterations", 0)),
+            "converged": bool(sphere.get("converged", False)),
+        })
+    else:
+        payload["error_message"] = candidate.get("error_message", "candidate failed")
+    return payload
+
+
+def best_fit_traces(best_fit: Dict[str, Any]) -> list:
+    """Crea trazas Plotly para el mejor candidato automático."""
+    best = best_fit.get("best")
+    if not best or best.get("sphere") is None:
+        return []
+    sphere = best["sphere"]
+    traces = [
+        sphere_surface_trace(
+            sphere["center"],
+            sphere["radius"],
+            f"Best-fit automática score={best['score']:.3f}",
+        ),
+        best_fit_seed_trace(best["seed"], best["score"]),
+    ]
+    traces.extend(axis_traces(best_fit["axis"]))
+    return traces
 
 
 def is_point_inside_surface_volume(point: np.ndarray, surface_points: np.ndarray, tolerance: float = 1e-6) -> bool:
@@ -272,9 +386,22 @@ def make_selection_figure(surface_points: np.ndarray | None = None) -> go.Figure
     return fig
 
 
-def build_selection_html(fig: go.Figure) -> str:
+def build_selection_html(
+    fig: go.Figure,
+    initial_best_fit: Dict[str, Any] | None = None,
+    initial_filename: str | None = None,
+    initial_points: int = 0,
+) -> str:
     """Construye HTML con manejador de clic y llamada a Python."""
     fig_json = json.dumps(fig, cls=PlotlyJSONEncoder)
+    initial_result = None
+    if initial_best_fit is not None:
+        initial_result = {
+            "filename": initial_filename or "superficie precargada",
+            "points": int(initial_points),
+            "best_fit": best_fit_to_response(initial_best_fit),
+        }
+    initial_result_json = json.dumps(initial_result, cls=PlotlyJSONEncoder)
     return f"""<!doctype html>
 <html>
 <head>
@@ -303,6 +430,7 @@ def build_selection_html(fig: go.Figure) -> str:
   <div id="plot"></div>
   <script>
     const fig = {fig_json};
+    const initialResult = {initial_result_json};
     const plot = document.getElementById('plot');
     const status = document.getElementById('status');
     const fileInput = document.getElementById('stlFile');
@@ -344,6 +472,29 @@ def build_selection_html(fig: go.Figure) -> str:
       }}
     }}
 
+    function bestFitSummary(result) {{
+      if (!result.best_fit || !result.best_fit.best) {{
+        return 'Best-fit: <code>sin candidatos</code>.';
+      }}
+      const best = result.best_fit.best;
+      return (
+        `Best-fit automático: ` +
+        `score <code>${{best.score.toFixed(3)}}</code> ` +
+        `ROC <code>${{best.radius.toFixed(3)}} mm</code> ` +
+        `RMSE <code>${{best.error.toFixed(3)}} mm</code> ` +
+        `cobertura <code>${{best.coverage_count}} (${{(100 * best.coverage_ratio).toFixed(1)}}%)</code> ` +
+        `candidatos válidos <code>${{result.best_fit.valid_candidate_count}}/${{result.best_fit.candidate_count}}</code>.`
+      );
+    }}
+
+    if (initialResult) {{
+      status.innerHTML =
+        `STL cargado: <code>${{initialResult.filename}}</code> ` +
+        `Puntos: <code>${{initialResult.points}}</code>. ` +
+        `${{bestFitSummary(initialResult)}} ` +
+        `Haz clic en la cabeza humeral para comparar con una semilla manual.`;
+    }}
+
     uploadButton.addEventListener('click', async function() {{
       const file = fileInput.files[0];
       if (!file) {{
@@ -379,7 +530,8 @@ def build_selection_html(fig: go.Figure) -> str:
         status.innerHTML =
           `STL cargado: <code>${{result.filename}}</code> ` +
           `Puntos: <code>${{result.points}}</code>. ` +
-          `Ahora haz clic en la cabeza humeral para usar ese punto como semilla.`;
+          `${{bestFitSummary(result)}} ` +
+          `Haz clic en la cabeza humeral para comparar con una semilla manual.`;
       }} catch (error) {{
         status.textContent = `Error cargando STL: ${{error.message}}`;
       }} finally {{
@@ -418,9 +570,15 @@ def build_selection_html(fig: go.Figure) -> str:
         status.innerHTML =
           `Semilla: <code>[${{result.seed.map(v => v.toFixed(3)).join(', ')}}]</code> ` +
           `Centro: <code>[${{result.center.map(v => v.toFixed(3)).join(', ')}}]</code> ` +
-          `Radio: <code>${{result.radius.toFixed(3)}} mm</code> ` +
-          `Eje PCA: <code>${{result.axis_length.toFixed(3)}} mm</code> ` +
-          `Diam/Long: <code>${{result.diameter_length_percentage.toFixed(2)}}%</code> ` +
+          `ROC: <code>${{result.roc.toFixed(3)}} mm</code> ` +
+          `Eje tallo: <code>${{result.axis_length.toFixed(3)}} mm</code> ` +
+          `Modelo: <code>${{result.axis_completeness}}</code> ` +
+          `Crop: <code>${{result.axis_crop_mode}}</code> ` +
+          `RANSAC: <code>${{result.axis_ransac_inlier_count}}/${{result.axis_fit_centerline_point_count}}</code> ` +
+          `Offset medial: <code>${{result.medial_offset.toFixed(3)}} mm</code> ` +
+          `Offset posterior: <code>${{result.posterior_offset.toFixed(3)}} mm</code> ` +
+          `Referencia: <code>${{result.morphology_reference_status}}</code> ` +
+          `Z ref: <code>ROC ${{result.reference_z_scores.roc.toFixed(2)}}, MO ${{result.reference_z_scores.medial_offset.toFixed(2)}}, PO ${{result.reference_z_scores.posterior_offset.toFixed(2)}}</code> ` +
           `RMSE: <code>${{result.error.toFixed(4)}} mm</code> ` +
           `Valida: <code>${{result.valid}}</code> ` +
           `Dibujo esfera: <code>${{result.sphere_drawn ? 'si' : 'omitido'}}</code>`;
@@ -433,22 +591,40 @@ def build_selection_html(fig: go.Figure) -> str:
 </html>"""
 
 
-def result_to_response(
-    result: Dict[str, Any],
-    max_visual_diameter_length_ratio: float = 1.0
-) -> Dict[str, Any]:
+def result_to_response(result: Dict[str, Any]) -> Dict[str, Any]:
     """Convierte resultado Python a respuesta JSON para el navegador."""
     seed = result["seed"]
     sphere = result["sphere"]
     axis = result["axis"]
     axis_length = float(axis["length"])
-    diameter_length_ratio = (2.0 * float(sphere["radius"]) / axis_length) if axis_length > 0 else float("nan")
-    sphere_center_inside_humerus = bool(result.get("sphere_center_inside_humerus", True))
-    sphere_drawn = bool(
-        np.isfinite(diameter_length_ratio)
-        and diameter_length_ratio <= max_visual_diameter_length_ratio
-        and sphere_center_inside_humerus
+    morphology = AuditTrail.compute_morphological_metrics(
+        sphere,
+        axis,
+        medial_direction=np.array([1.0, 0.0, 0.0]),
+        posterior_direction=np.array([0.0, 1.0, 0.0]),
     )
+    validation_data = next(
+        (
+            step["data"]
+            for step in reversed(result["audit"].get("steps", []))
+            if step.get("step_name") == "validate_approximation"
+        ),
+        {},
+    )
+    reference_flags = validation_data.get("morphology_reference_flags", {})
+    reference_values = validation_data.get("morphology_reference_values", {})
+    reference_reasons = validation_data.get("morphology_reference_reasons", [])
+    reference_status = (
+        "en referencia"
+        if reference_flags.get("all_in_reference", False)
+        else "fuera de referencia"
+    )
+    reference_z_scores = {
+        key: float(value.get("z_score", float("nan")))
+        for key, value in reference_values.items()
+    }
+    sphere_center_inside_humerus = bool(result.get("sphere_center_inside_humerus", True))
+    sphere_drawn = bool(sphere_center_inside_humerus)
     traces = [
         selected_seed_trace(seed),
         *axis_traces(axis),
@@ -467,38 +643,62 @@ def result_to_response(
     if not sphere_drawn:
         if not sphere_center_inside_humerus:
             visual_reason = "sphere center is outside the approximated humerus volume"
-        elif not np.isfinite(diameter_length_ratio):
-            visual_reason = "diameter_length_ratio is not finite"
         else:
-            visual_reason = (
-                f"diameter_length_ratio {diameter_length_ratio:.4f} exceeds "
-                f"visual threshold {max_visual_diameter_length_ratio:.4f}"
-            )
+            visual_reason = "sphere was not drawn"
     return {
         "seed": seed.tolist(),
         "center": sphere["center"].tolist(),
         "radius": float(sphere["radius"]),
+        "roc": float(morphology["roc"]),
+        "medial_offset": float(morphology["medial_offset"]),
+        "posterior_offset": float(morphology["posterior_offset"]),
+        "total_offset": float(morphology["total_offset"]),
+        "morphology": morphology,
         "error": float(sphere["error"]),
         "iterations": int(sphere["iterations"]),
         "converged": bool(sphere["converged"]),
         "axis_length": axis_length,
-        "diameter_length_ratio": diameter_length_ratio,
-        "diameter_length_percentage": 100.0 * diameter_length_ratio,
+        "axis_method": axis.get("method", ""),
+        "axis_fit_point_count": int(axis.get("axis_fit_point_count", 0)),
+        "axis_fit_strategy": axis.get("axis_fit_strategy", ""),
+        "axis_projected_length": float(axis.get("projected_length", axis_length)),
+        "axis_is_complete_humerus": bool(axis.get("is_complete_humerus", False)),
+        "axis_completeness": "completo" if axis.get("is_complete_humerus", False) else "incompleto",
+        "axis_crop_mode": axis.get("crop_mode", ""),
+        "axis_roi_point_count": int(axis.get("roi_point_count", 0)),
+        "axis_slice_valid_count": int(axis.get("slice_valid_count", 0)),
+        "axis_spike_filtered_slice_count": int(axis.get("spike_filtered_slice_count", 0)),
+        "axis_fit_centerline_point_count": int(axis.get("axis_fit_centerline_point_count", 0)),
+        "axis_ransac_inlier_count": int(axis.get("ransac_inlier_count", 0)),
+        "axis_ransac_outlier_count": int(axis.get("ransac_outlier_count", 0)),
+        "morphology_reference_flags": reference_flags,
+        "morphology_reference_values": reference_values,
+        "morphology_reference_statistics": validation_data.get("morphology_reference_statistics", {}),
+        "morphology_reference_ranges": validation_data.get("morphology_reference_ranges", {}),
+        "morphology_reference_reasons": reference_reasons,
+        "morphology_reference_status": reference_status,
+        "reference_z_scores": reference_z_scores,
         "sphere_center_inside_humerus": sphere_center_inside_humerus,
         "sphere_drawn": sphere_drawn,
         "sphere_visual_reason": visual_reason,
-        "max_visual_diameter_length_ratio": float(max_visual_diameter_length_ratio),
         "valid": bool(result["audit"]["final_valid"]),
         "traces": json.loads(json.dumps(traces, cls=PlotlyJSONEncoder)),
     }
 
 
-def surface_to_response(filename: str, surface_points: np.ndarray) -> Dict[str, Any]:
+def surface_to_response(
+    filename: str,
+    surface_points: np.ndarray,
+    best_fit: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     """Convierte una superficie cargada en respuesta JSON para Plotly."""
     traces = [surface_points_trace(surface_points, name=f"Superficie STL: {filename}")]
+    if best_fit is not None:
+        traces.extend(best_fit_traces(best_fit))
     return {
         "filename": filename,
         "points": int(len(surface_points)),
+        "best_fit": best_fit_to_response(best_fit) if best_fit is not None else None,
         "traces": json.loads(json.dumps(traces, cls=PlotlyJSONEncoder)),
     }
 
@@ -518,15 +718,32 @@ def run_selection_server(args: argparse.Namespace) -> None:
         "surface_points": None,
         "surface_normals": None,
         "filename": None,
+        "best_fit": None,
     }
     if args.stl or args.synthetic_demo:
         surface_points, surface_normals, _ = load_demo_surface(args)
         state["surface_points"] = surface_points
         state["surface_normals"] = surface_normals
         state["filename"] = Path(args.stl).name if args.stl else "synthetic-demo"
+        state["best_fit"] = compute_best_fit_search(
+            surface_points,
+            surface_normals,
+            args.best_fit_seeds,
+            args.best_fit_top,
+            args.initial_radius,
+            args.max_error,
+        )
 
     fig = make_selection_figure(state["surface_points"])
-    html = build_selection_html(fig).encode("utf-8")
+    if state["best_fit"] is not None:
+        for trace in best_fit_traces(state["best_fit"]):
+            fig.add_trace(trace)
+    html = build_selection_html(
+        fig,
+        initial_best_fit=state["best_fit"],
+        initial_filename=state["filename"],
+        initial_points=len(state["surface_points"]) if state["surface_points"] is not None else 0,
+    ).encode("utf-8")
 
     class SelectionHandler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *handler_args: Any) -> None:
@@ -568,10 +785,19 @@ def run_selection_server(args: argparse.Namespace) -> None:
                 filename = Path(filename).name
                 data = self.rfile.read(length)
                 surface_points, surface_normals = load_surface_from_upload(filename, data, args.samples)
+                best_fit = compute_best_fit_search(
+                    surface_points,
+                    surface_normals,
+                    args.best_fit_seeds,
+                    args.best_fit_top,
+                    args.initial_radius,
+                    args.max_error,
+                )
                 state["surface_points"] = surface_points
                 state["surface_normals"] = surface_normals
                 state["filename"] = filename
-                self._send_json(surface_to_response(filename, surface_points))
+                state["best_fit"] = best_fit
+                self._send_json(surface_to_response(filename, surface_points, best_fit=best_fit))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status_code=400)
 
@@ -596,7 +822,7 @@ def run_selection_server(args: argparse.Namespace) -> None:
                     args.initial_radius,
                     args.max_error,
                 )
-                self._send_json(result_to_response(result, args.max_visual_diameter_length_ratio))
+                self._send_json(result_to_response(result))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status_code=400)
 
@@ -640,7 +866,21 @@ def run_deterministic_demo(args: argparse.Namespace) -> None:
     print(f"  Eje origen: {axis['origin'].round(4).tolist()}")
     print(f"  Eje direccion: {axis['direction'].round(4).tolist()}")
     print(f"  Eje longitud: {axis['length']:.4f} mm")
-    print(f"  Diametro/longitud: {(2.0 * sphere['radius'] / axis['length']) * 100.0:.2f}%")
+    print(f"  Modelo eje: {'completo' if axis.get('is_complete_humerus') else 'incompleto'}")
+    print(f"  Crop eje: {axis.get('crop_mode', 'n/a')}")
+    print(
+        "  RANSAC eje: "
+        f"{axis.get('ransac_inlier_count', 0)}/{axis.get('axis_fit_centerline_point_count', 0)} "
+        "centros inlier"
+    )
+    morphology = AuditTrail.compute_morphological_metrics(
+        sphere,
+        axis,
+        medial_direction=np.array([1.0, 0.0, 0.0]),
+        posterior_direction=np.array([0.0, 1.0, 0.0]),
+    )
+    print(f"  Offset medial: {morphology['medial_offset']:.4f} mm")
+    print(f"  Offset posterior: {morphology['posterior_offset']:.4f} mm")
     print(f"  Auditoria final: {result['audit']['final_valid']}")
 
     if args.output:
@@ -657,14 +897,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed-index", type=int, default=10, help="Indice reproducible entre candidatas.")
     parser.add_argument("--use-seed-index", action="store_true", help="No abre selector; usa --seed-index directamente.")
     parser.add_argument("--synthetic-demo", action="store_true", help="Usa el humero sintetico solo para demos/tests.")
-    parser.add_argument("--initial-radius", type=float, default=25.0, help="Radio inicial de esfera en mm.")
+    parser.add_argument("--initial-radius", type=float, default=22.0, help="Radio inicial de esfera en mm.")
     parser.add_argument("--max-error", type=float, default=2.0, help="RMSE maximo aceptado por auditoria.")
-    parser.add_argument(
-        "--max-visual-diameter-length-ratio",
-        type=float,
-        default=1.0,
-        help="No dibuja la esfera si diametro/longitud supera este valor. Por defecto: diametro > longitud.",
-    )
+    parser.add_argument("--best-fit-seeds", type=int, default=60, help="Cantidad de semillas para busqueda best-fit automatica.")
+    parser.add_argument("--best-fit-top", type=int, default=5, help="Cantidad de candidatos best-fit a reportar.")
     parser.add_argument("--output", help="Guarda HTML en esta ruta.")
     parser.add_argument("--no-browser", action="store_true", help="No abre navegador; util para tests.")
     parser.add_argument("--host", default="127.0.0.1", help="Host del servidor de seleccion.")

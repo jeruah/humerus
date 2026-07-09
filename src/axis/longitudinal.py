@@ -1,8 +1,9 @@
 """Aproximación del eje longitudinal del húmero."""
 
 import numpy as np
-from typing import Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any
 from sklearn.decomposition import PCA
+from scipy.spatial import ConvexHull, QhullError
 
 
 class AxisApproximator:
@@ -20,8 +21,17 @@ class AxisApproximator:
     @staticmethod
     def compute_longitudinal_axis(
         surface_points: np.ndarray,
-        method: str = "shaft_pca",
-        shaft_trim_fraction: float = 0.18
+        method: str = "diaphyseal_slice_axis",
+        shaft_trim_fraction: float = 0.18,
+        shaft_end_trim_bins: int = 2,
+        slice_count: int = 28,
+        voxel_size: float = 3.0,
+        shaft_radius_quantile: float = 0.60,
+        complete_length_threshold: float = 240.0,
+        crop_fraction: float = 0.20,
+        slice_spike_ratio: float = 2.5,
+        ransac_iterations: int = 128,
+        ransac_residual_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Calcula eje longitudinal del húmero.
@@ -31,9 +41,29 @@ class AxisApproximator:
         surface_points : np.ndarray
             Puntos de la superficie (shape: (N, 3))
         method : str
-            Método: "shaft_pca", "pca" o "least_squares_line"
+            Método: "diaphyseal_slice_axis", "shaft_pca", "pca" o
+            "least_squares_line"
         shaft_trim_fraction : float
             Fracción proximal y distal a ignorar al usar "shaft_pca".
+        shaft_end_trim_bins : int
+            Número de bins no vacíos a descartar en cada extremo del tallo.
+        slice_count : int
+            Número de cortes transversales para detectar diáfisis.
+        voxel_size : float
+            Tamaño de voxel en mm para neutralizar densidad antes del eje inicial.
+        shaft_radius_quantile : float
+            Cuantil de radio transversal usado para conservar cortes tipo tallo.
+        complete_length_threshold : float
+            Longitud proyectada mínima para tratar el húmero como completo.
+        crop_fraction : float
+            Fracción proximal/distal a descartar. En modelos incompletos solo
+            se descarta la fracción proximal de cabeza.
+        slice_spike_ratio : float
+            Factor relativo para descartar slices con área/perímetro anómalos.
+        ransac_iterations : int
+            Iteraciones del ajuste robusto RANSAC.
+        ransac_residual_threshold : float, optional
+            Umbral de distancia para inliers RANSAC. Si no se entrega se estima.
         
         Returns
         -------
@@ -60,7 +90,23 @@ class AxisApproximator:
             raise ValueError("Se requieren al menos 2 puntos para calcular el eje")
 
         shaft_points = surface_points
-        if method == "shaft_pca":
+        axis_diagnostics = {}
+        if method == "diaphyseal_slice_axis":
+            direction, point_on_line, shaft_points, axis_diagnostics = (
+                AxisApproximator._compute_axis_diaphyseal_slice(
+                    surface_points,
+                    slice_count=slice_count,
+                    voxel_size=voxel_size,
+                    shaft_radius_quantile=shaft_radius_quantile,
+                    shaft_end_trim_bins=shaft_end_trim_bins,
+                    complete_length_threshold=complete_length_threshold,
+                    crop_fraction=crop_fraction,
+                    slice_spike_ratio=slice_spike_ratio,
+                    ransac_iterations=ransac_iterations,
+                    ransac_residual_threshold=ransac_residual_threshold,
+                )
+            )
+        elif method == "shaft_pca":
             direction, point_on_line, shaft_points = AxisApproximator._compute_axis_shaft_pca(
                 surface_points,
                 trim_fraction=shaft_trim_fraction,
@@ -70,7 +116,10 @@ class AxisApproximator:
         elif method == "least_squares_line":
             direction, point_on_line = AxisApproximator._compute_axis_least_squares(surface_points)
         else:
-            raise ValueError("method debe ser 'shaft_pca', 'pca' o 'least_squares_line'")
+            raise ValueError(
+                "method debe ser 'diaphyseal_slice_axis', 'shaft_pca', "
+                "'pca' o 'least_squares_line'"
+            )
 
         projections = (surface_points - point_on_line) @ direction
         min_t = float(projections.min())
@@ -99,8 +148,339 @@ class AxisApproximator:
             "axis_fit_point_count": int(len(shaft_points)),
             "total_point_count": int(len(surface_points)),
         }
+        axis.update(axis_diagnostics)
         axis["validation"] = AxisApproximator.validate_axis(axis, surface_points)
         return axis
+
+    @staticmethod
+    def _compute_axis_diaphyseal_slice(
+        surface_points: np.ndarray,
+        slice_count: int = 28,
+        voxel_size: float = 3.0,
+        shaft_radius_quantile: float = 0.60,
+        shaft_end_trim_bins: int = 2,
+        complete_length_threshold: float = 240.0,
+        crop_fraction: float = 0.20,
+        slice_spike_ratio: float = 2.5,
+        ransac_iterations: int = 128,
+        ransac_residual_threshold: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+        """
+        Calcula el eje desde cortes transversales de la diáfisis.
+
+        Esta variante no usa la esfera. Sigue el flujo:
+        1. PCA global solo para orientar el eje superior-inferior.
+        2. Clasificación completo/incompleto por longitud proyectada.
+        3. Crop proximal/distal si está completo, o solo proximal si está incompleto.
+        4. Slices en el ROI, filtrando spikes de área/perímetro.
+        5. RANSAC sobre centros de slices retenidos.
+        """
+        points = np.asarray(surface_points, dtype=float)
+        neutral_points = AxisApproximator._voxel_downsample(points, voxel_size)
+        if len(neutral_points) < 8:
+            neutral_points = points
+
+        rough_direction, rough_centroid = AxisApproximator._compute_axis_pca(neutral_points)
+        head_position = AxisApproximator.find_head_position(neutral_points)
+        if np.dot(head_position - rough_centroid, rough_direction) < 0:
+            rough_direction = -rough_direction
+
+        projections = (neutral_points - rough_centroid) @ rough_direction
+        projected_length = float(projections.max() - projections.min())
+        is_complete = bool(projected_length >= complete_length_threshold)
+        crop = float(np.clip(crop_fraction, 0.0, 0.45))
+
+        low_q = float(np.quantile(projections, crop)) if is_complete else float(projections.min())
+        high_q = float(np.quantile(projections, 1.0 - crop))
+        roi_mask = (projections >= low_q) & (projections <= high_q)
+        roi_points = neutral_points[roi_mask]
+        roi_projections = projections[roi_mask]
+        if len(roi_points) < max(12, int(0.05 * len(neutral_points))):
+            roi_points = neutral_points
+            roi_projections = projections
+            low_q = float(projections.min())
+            high_q = float(projections.max())
+
+        bin_count = max(10, int(slice_count))
+        edges = np.linspace(float(roi_projections.min()), float(roi_projections.max()), bin_count + 1)
+
+        min_slice_points = max(6, int(0.003 * len(roi_points)))
+        slice_centroids = []
+        slice_points = []
+        slice_indices = []
+        slice_radii = []
+        slice_areas = []
+        slice_perimeters = []
+
+        for idx in range(bin_count):
+            if idx == bin_count - 1:
+                mask = (roi_projections >= edges[idx]) & (roi_projections <= edges[idx + 1])
+            else:
+                mask = (roi_projections >= edges[idx]) & (roi_projections < edges[idx + 1])
+            pts = roi_points[mask]
+            if len(pts) < min_slice_points:
+                continue
+
+            centroid = pts.mean(axis=0)
+            vecs = pts - centroid
+            axial = np.outer(vecs @ rough_direction, rough_direction)
+            transverse = vecs - axial
+            radial_distances = np.linalg.norm(transverse, axis=1)
+            radius = float(np.percentile(radial_distances, 90))
+            transverse_2d = AxisApproximator._project_to_transverse_2d(transverse, rough_direction)
+            area, perimeter = AxisApproximator._cross_section_area_perimeter(transverse_2d)
+
+            slice_centroids.append(centroid)
+            slice_points.append(pts)
+            slice_indices.append(idx)
+            slice_radii.append(radius)
+            slice_areas.append(area)
+            slice_perimeters.append(perimeter)
+
+        if len(slice_centroids) < 4:
+            direction, centroid, shaft_points = AxisApproximator._compute_axis_shaft_pca(neutral_points)
+            return direction, centroid, shaft_points, {
+                "axis_fit_strategy": "fallback_shaft_pca",
+                "density_neutral_point_count": int(len(neutral_points)),
+                "projected_length": projected_length,
+                "is_complete_humerus": is_complete,
+                "slice_count": int(bin_count),
+            }
+
+        radii = np.asarray(slice_radii, dtype=float)
+        areas = np.asarray(slice_areas, dtype=float)
+        perimeters = np.asarray(slice_perimeters, dtype=float)
+        radius_threshold = float(np.quantile(radii, np.clip(shaft_radius_quantile, 0.1, 0.9)))
+        area_threshold = AxisApproximator._spike_threshold(areas, slice_spike_ratio)
+        perimeter_threshold = AxisApproximator._spike_threshold(perimeters, slice_spike_ratio)
+        candidate = (areas <= area_threshold) & (perimeters <= perimeter_threshold)
+        segments = AxisApproximator._continuous_shaft_segments(
+            np.asarray(slice_centroids, dtype=float),
+            np.asarray(slice_indices, dtype=int),
+            candidate,
+            radii,
+        )
+
+        if not segments:
+            segments = [(0, len(slice_centroids))]
+
+        best_start, best_stop = max(
+            segments,
+            key=lambda segment: (
+                segment[1] - segment[0],
+                -float(np.mean(radii[segment[0]:segment[1]])),
+            ),
+        )
+        trim_bins = min(
+            max(0, int(shaft_end_trim_bins)),
+            max(0, (best_stop - best_start - 2) // 2),
+        )
+        start = best_start + trim_bins
+        stop = best_stop - trim_bins
+        if stop - start < 2:
+            start, stop = best_start, best_stop
+
+        selected = np.zeros(len(slice_centroids), dtype=bool)
+        selected[start:stop] = candidate[start:stop]
+        if np.count_nonzero(selected) < 2:
+            selected[start:stop] = True
+
+        retained_centroids = np.asarray(slice_centroids, dtype=float)[selected]
+        retained_points = np.vstack([pts for pts, keep in zip(slice_points, selected) if keep])
+
+        direction, centroid, inlier_mask, residual_threshold = AxisApproximator._ransac_line_fit(
+            retained_centroids,
+            iterations=ransac_iterations,
+            residual_threshold=ransac_residual_threshold,
+        )
+        if np.dot(direction, rough_direction) < 0:
+            direction = -direction
+        inlier_centroids = retained_centroids[inlier_mask]
+        if len(inlier_centroids) >= 2:
+            centroid = inlier_centroids.mean(axis=0)
+
+        return direction, centroid, retained_points, {
+            "axis_fit_strategy": "rough_pca_crop_slice_filter_ransac",
+            "density_neutral_point_count": int(len(neutral_points)),
+            "projected_length": projected_length,
+            "complete_length_threshold": float(complete_length_threshold),
+            "is_complete_humerus": is_complete,
+            "crop_fraction": crop,
+            "crop_mode": "head_and_tail" if is_complete else "head_only",
+            "crop_projection_range": [float(low_q), float(high_q)],
+            "roi_point_count": int(len(roi_points)),
+            "slice_count": int(bin_count),
+            "slice_valid_count": int(len(slice_centroids)),
+            "shaft_radius_threshold": float(radius_threshold),
+            "slice_area_threshold": float(area_threshold),
+            "slice_perimeter_threshold": float(perimeter_threshold),
+            "spike_filtered_slice_count": int(np.count_nonzero(candidate)),
+            "shaft_segment_start_slice": int(slice_indices[start]),
+            "shaft_segment_stop_slice": int(slice_indices[stop - 1]),
+            "shaft_retained_slice_count": int(len(retained_centroids)),
+            "axis_fit_centerline_point_count": int(len(retained_centroids)),
+            "ransac_inlier_count": int(np.count_nonzero(inlier_mask)),
+            "ransac_outlier_count": int(len(inlier_mask) - np.count_nonzero(inlier_mask)),
+            "ransac_residual_threshold": float(residual_threshold),
+        }
+
+    @staticmethod
+    def _voxel_downsample(points: np.ndarray, voxel_size: float) -> np.ndarray:
+        """Reduce densidad conservando un punto representativo por voxel."""
+        if voxel_size <= 0:
+            return points
+        shifted = points - points.min(axis=0)
+        keys = np.floor(shifted / float(voxel_size)).astype(np.int64)
+        _, unique_indices = np.unique(keys, axis=0, return_index=True)
+        return points[np.sort(unique_indices)]
+
+    @staticmethod
+    def _project_to_transverse_2d(points: np.ndarray, axis: np.ndarray) -> np.ndarray:
+        """Proyecta puntos transversales 3D a coordenadas 2D del plano de corte."""
+        axis = axis / np.linalg.norm(axis)
+        helper = np.array([1.0, 0.0, 0.0])
+        if abs(np.dot(helper, axis)) > 0.9:
+            helper = np.array([0.0, 1.0, 0.0])
+        basis_u = helper - np.dot(helper, axis) * axis
+        basis_u = basis_u / np.linalg.norm(basis_u)
+        basis_v = np.cross(axis, basis_u)
+        basis_v = basis_v / np.linalg.norm(basis_v)
+        return np.column_stack((points @ basis_u, points @ basis_v))
+
+    @staticmethod
+    def _cross_section_area_perimeter(points_2d: np.ndarray) -> Tuple[float, float]:
+        """Estima área y perímetro de una sección con casco convexo 2D."""
+        points_2d = np.asarray(points_2d, dtype=float)
+        if len(points_2d) < 3:
+            return 0.0, 0.0
+        try:
+            hull = ConvexHull(points_2d)
+            return float(hull.volume), float(hull.area)
+        except QhullError:
+            mins = points_2d.min(axis=0)
+            maxs = points_2d.max(axis=0)
+            width, height = maxs - mins
+            return float(width * height), float(2.0 * (width + height))
+
+    @staticmethod
+    def _spike_threshold(values: np.ndarray, ratio: float) -> float:
+        """Umbral robusto para descartar spikes altos de área/perímetro."""
+        values = np.asarray(values, dtype=float)
+        finite = values[np.isfinite(values)]
+        if len(finite) == 0:
+            return float("inf")
+        median = float(np.median(finite))
+        mad = float(np.median(np.abs(finite - median)))
+        robust = median + 6.0 * (1.4826 * mad if mad > 0 else max(median, 1.0))
+        relative = median * max(float(ratio), 1.0)
+        return float(max(robust, relative))
+
+    @staticmethod
+    def _ransac_line_fit(
+        points: np.ndarray,
+        iterations: int = 128,
+        residual_threshold: Optional[float] = None,
+        random_seed: int = 13,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+        """Ajusta una recta 3D con RANSAC y refina con PCA sobre inliers."""
+        points = np.asarray(points, dtype=float)
+        if len(points) < 2:
+            raise ValueError("Se requieren al menos 2 puntos para RANSAC")
+        if len(points) == 2:
+            direction = points[1] - points[0]
+            norm = np.linalg.norm(direction)
+            if norm <= 1e-12:
+                direction = np.array([0.0, 0.0, 1.0])
+            else:
+                direction = direction / norm
+            return direction, points.mean(axis=0), np.ones(len(points), dtype=bool), 0.0
+
+        initial_direction, initial_point = AxisApproximator._compute_axis_pca(points)
+        initial_distances = AxisApproximator._distances_to_line(points, initial_point, initial_direction)
+        if residual_threshold is None:
+            median = float(np.median(initial_distances))
+            mad = float(np.median(np.abs(initial_distances - median)))
+            residual_threshold = max(2.0, median + 2.5 * (1.4826 * mad if mad > 0 else median))
+
+        rng = np.random.default_rng(random_seed)
+        best_inliers = initial_distances <= residual_threshold
+        best_score = (int(np.count_nonzero(best_inliers)), -float(initial_distances[best_inliers].mean() if np.any(best_inliers) else np.inf))
+
+        max_iterations = max(1, int(iterations))
+        for _ in range(max_iterations):
+            i, j = rng.choice(len(points), size=2, replace=False)
+            direction = points[j] - points[i]
+            norm = np.linalg.norm(direction)
+            if norm <= 1e-12:
+                continue
+            direction = direction / norm
+            distances = AxisApproximator._distances_to_line(points, points[i], direction)
+            inliers = distances <= residual_threshold
+            if np.count_nonzero(inliers) < 2:
+                continue
+            mean_distance = float(distances[inliers].mean())
+            score = (int(np.count_nonzero(inliers)), -mean_distance)
+            if score > best_score:
+                best_score = score
+                best_inliers = inliers
+
+        if np.count_nonzero(best_inliers) < 2:
+            best_inliers = np.ones(len(points), dtype=bool)
+        direction, centroid = AxisApproximator._compute_axis_pca(points[best_inliers])
+        return direction, centroid, best_inliers, float(residual_threshold)
+
+    @staticmethod
+    def _distances_to_line(points: np.ndarray, point_on_line: np.ndarray, direction: np.ndarray) -> np.ndarray:
+        """Distancias perpendiculares de puntos a una recta 3D."""
+        direction = direction / np.linalg.norm(direction)
+        vecs = points - point_on_line
+        projections = np.outer(vecs @ direction, direction)
+        return np.linalg.norm(vecs - projections, axis=1)
+
+    @staticmethod
+    def _continuous_shaft_segments(
+        centroids: np.ndarray,
+        slice_indices: np.ndarray,
+        candidate: np.ndarray,
+        radii: np.ndarray,
+    ) -> list:
+        """Agrupa cortes candidatos y corta discontinuidades geométricas."""
+        if len(centroids) == 0:
+            return []
+
+        jumps = np.linalg.norm(np.diff(centroids, axis=0), axis=1)
+        median_jump = float(np.median(jumps)) if len(jumps) else 0.0
+        median_radius = float(np.median(radii)) if len(radii) else 0.0
+        jump_threshold = max(3.0 * median_jump, 1.5 * median_radius, 8.0)
+
+        segments = []
+        start = None
+        previous_valid = None
+        for idx, is_candidate in enumerate(candidate):
+            if not is_candidate:
+                if start is not None:
+                    segments.append((start, idx))
+                    start = None
+                previous_valid = None
+                continue
+
+            discontinuous = (
+                previous_valid is not None
+                and (
+                    slice_indices[idx] != slice_indices[previous_valid] + 1
+                    or np.linalg.norm(centroids[idx] - centroids[previous_valid]) > jump_threshold
+                )
+            )
+            if start is None or discontinuous:
+                if start is not None:
+                    segments.append((start, idx))
+                start = idx
+            previous_valid = idx
+
+        if start is not None:
+            segments.append((start, len(candidate)))
+
+        return [segment for segment in segments if segment[1] - segment[0] >= 2]
 
     @staticmethod
     def _compute_axis_shaft_pca(

@@ -1,322 +1,267 @@
-# RESUMEN DE IMPLEMENTACIÓN
+# Resumen de Implementación
 
-## ✅ COMPLETADO EXITOSAMENTE
+Última actualización: 2026-07-14
 
-### Fase 0: Configuración de Agentes IA
-- ✅ `.agent.md` — Definición de 5 agentes especializados
-- ✅ `.instructions.md` — Requisitos técnicos y estándares
-- ✅ `AGENTS.md` — Guía completa de coordinación de agentes
-- ✅ `copilot-instructions.md` — Instrucciones para Copilot
-- ✅ `README.md` — Documentación del proyecto
+Este documento resume el estado real del proyecto después de las iteraciones recientes. La documentación de agentes IA, Copilot y quickstart fue retirada porque ya no representa el flujo de trabajo ni ayuda a mejorar la precisión geométrica.
 
-### Fase 1: Sistema de Auditoría ✅
-**Status**: COMPLETAMENTE IMPLEMENTADO Y TESTEADO
+## Limpieza de Documentación
 
-**Archivos**:
-- `src/audit/trail.py` — Sistema AuditTrail (implementado)
-  - ✅ Clase `AuditTrail` para registrar pasos
-  - ✅ Validación de semillas
-  - ✅ Validación de aproximaciones
-  - ✅ Generación de reportes JSON
+Se eliminaron:
 
-- `src/audit/__init__.py` — Módulo inicializado
+- `.agent.md`
+- `.instructions.md`
+- `AGENTS.md`
+- `copilot-instructions.md`
+- `QUICK_START.md`
+- `STATUS.md`
 
-**Clases Implementadas**:
-```python
-class AuditTrail:
-    - log_step(step_name, data)
-    - validate_seed(point, articulation_region)
-    - is_valid_approximation(sphere)
-    - get_report()
-    - to_json()
+La documentación viva queda concentrada en:
 
-class AuditManager:
-    - create_audit(seed_id)
-    - get_summary()
-```
+- `README.md`: guía principal de uso, arquitectura, métricas y limitaciones.
+- `IMPLEMENTATION_SUMMARY.md`: estado de implementación y decisiones técnicas.
 
-**Tests**: 17 tests PASADOS ✅
+## Capacidades Implementadas
 
-### Fase 2: Visualización 3D ✅
-**Status**: COMPLETAMENTE IMPLEMENTADO Y TESTEADO
+### Carga y Muestreo STL
 
-**Archivos**:
-- `src/visualization/visualizer.py` — Visualizador 3D
-  - ✅ Clase `Visualizer3D` para gráficos 3D
-  - ✅ Clase `InteractiveVisualizer` para vistas comparativas
-  - ✅ **Esferas en COLOR ROJO** ✅
-  - ✅ **Eje longitudinal en COLOR ROJO** ✅
+Archivos:
 
-**Características Principales**:
-```python
-class Visualizer3D:
-    - create_figure()
-    - plot_mesh(vertices, faces)
-    - plot_sphere(center, radius, color='red')  # ← ROJO
-    - plot_axis(origin, direction, length, color='red')  # ← ROJO
-    - plot_surface_points(points)
-    - plot_seeds(seeds, valid_mask)
-    - plot_approximations(approximations)
-    - save(filepath)
-    - show()
-```
+- `src/mesh/loader.py`
+- `src/mesh/discretizer.py`
 
-**Tests**: 13 tests PASADOS ✅
+Estado:
 
-### Fase 3: Tests de Integración ✅
-**Status**: COMPLETAMENTE IMPLEMENTADO Y TESTEADO
+- Carga STL ASCII y binario.
+- Extrae vértices, caras y normales.
+- Discretiza superficie con muestreo uniforme.
+- Entrega `surface_points` y `surface_normals` para el pipeline geométrico.
 
-**Archivos**:
-- `tests/test_audit.py` — 17 tests de auditoría
-- `tests/test_visualization.py` — 13 tests de visualización
-- `tests/test_integration.py` — 6 tests de integración
+### Ajuste de Esfera Desde Semilla
 
-**Cobertura Total**: 36 TESTS PASADOS ✅
+Archivo:
 
-**Tests de Auditoría** (17 tests):
-- ✅ Creación de registros
-- ✅ Conversión a diccionario/JSON
-- ✅ Logging de múltiples pasos
-- ✅ Validación de semillas (válidas e inválidas)
-- ✅ Validación de aproximaciones
-- ✅ Generación de reportes
-- ✅ Gestor de auditorías multicanal
+- `src/approximation/sphere.py`
 
-**Tests de Visualización** (13 tests):
-- ✅ Creación de figura 3D
-- ✅ Graficar malla triangular
-- ✅ Graficar esfera en ROJO
-- ✅ Graficar eje en ROJO
-- ✅ Graficar puntos de superficie
-- ✅ Graficar semillas
-- ✅ Graficar múltiples aproximaciones
-- ✅ Leyenda y escala
-- ✅ Guardar figura a archivo
+Estado:
 
-**Tests de Integración** (6 tests):
-- ✅ Flujo completo de una semilla
-- ✅ Flujo de múltiples semillas
-- ✅ Visualización con resultados auditados
-- ✅ Integración completa: auditoría + visualización
-- ✅ Preservación de integridad de datos
-- ✅ Aislamiento de auditorías
+- Implementa `SphericalApproximator`.
+- Ajusta esfera por least-squares local.
+- Itera desde una semilla de superficie.
+- Registra inicialización, iteraciones y resultado en `AuditTrail`.
+- Controla convergencia por cambio de centro/radio.
 
-### Fase 4: Scripts de Ejemplo ✅
-**Status**: COMPLETAMENTE IMPLEMENTADO
+### Best-Fit Automático Poblacional
 
-**Archivos**:
-- `examples/demo_visualization.py` — 4 demostraciones completas
-  - ✅ Demo 1: Esfera y eje en ROJO
-  - ✅ Demo 2: Múltiples aproximaciones en ROJO
-  - ✅ Demo 3: Auditoría + Visualización
-  - ✅ Demo 4: Vista comparativa
+Archivo:
 
-- `run_tests.py` — Script para ejecutar todas las pruebas
+- `src/optimization/best_fit.py`
 
-### Plantillas Base Creadas
-- `src/mesh/loader.py` — Cargador de STL
-- `src/mesh/discretizer.py` — Discretizador de superficie
-- `src/geometry/curvature.py` — Cálculo de curvatura
-- `src/geometry/differential.py` — Análisis diferencial
-- `src/approximation/sphere.py` — Aproximación de esfera
-- `src/optimization/refinement.py` — Optimizador
-- `src/axis/longitudinal.py` — Aproximación de eje
-- `src/validation/viability.py` — Validador de semillas
+Clase:
 
-## 📊 RESULTADOS DE TESTS
+- `HumeralHeadBestFitSearch`
 
-```
-============================= test session starts ==============================
-platform linux -- Python 3.14.5, pytest-9.1.0
+Estado:
 
-collected 36 items
+- Toma `n_seeds` puntos candidatos.
+- Detecta el extremo probable de cabeza comparando expansión transversal en ambos extremos del eje.
+- Prioriza semillas alejadas del eje para evitar el tallo.
+- Ajusta una esfera por semilla.
+- Evalúa cada candidata con una función de costo.
+- Retorna `best`, `top_candidates`, conteo de candidatos válidos, cobertura y auditoría.
 
-tests/test_audit.py                       17 PASSED ✅
-tests/test_visualization.py               13 PASSED ✅
-tests/test_integration.py                 6 PASSED ✅
+Componentes del score:
 
-============================== 36 passed in 1.17s ==============================
-```
+- RMSE normalizado.
+- Penalización morfológica por z-scores.
+- Penalización por baja cobertura de superficie proximal.
+- Penalización por falta de convergencia.
+- Penalización por estar fuera de rangos de referencia.
 
-**Tasa de éxito**: 100% ✅
+### Eje Longitudinal Robusto
 
-## 📁 ESTRUCTURA DEL PROYECTO
+Archivo:
 
-```
-humero/
-├── src/
-│   ├── audit/
-│   │   ├── __init__.py
-│   │   └── trail.py              ✅ IMPLEMENTADO
-│   ├── visualization/
-│   │   ├── __init__.py
-│   │   └── visualizer.py         ✅ IMPLEMENTADO
-│   ├── mesh/
-│   │   ├── __init__.py
-│   │   ├── loader.py             📋 Plantilla
-│   │   └── discretizer.py        📋 Plantilla
-│   ├── geometry/
-│   │   ├── __init__.py
-│   │   ├── curvature.py          📋 Plantilla
-│   │   └── differential.py       📋 Plantilla
-│   ├── approximation/
-│   │   ├── __init__.py
-│   │   └── sphere.py             📋 Plantilla
-│   ├── optimization/
-│   │   ├── __init__.py
-│   │   └── refinement.py         📋 Plantilla
-│   ├── axis/
-│   │   ├── __init__.py
-│   │   └── longitudinal.py       📋 Plantilla
-│   ├── validation/
-│   │   ├── __init__.py
-│   │   └── viability.py          📋 Plantilla
-│   └── __init__.py
-├── tests/
-│   ├── __init__.py
-│   ├── test_audit.py             ✅ 17 TESTS PASADOS
-│   ├── test_visualization.py     ✅ 13 TESTS PASADOS
-│   └── test_integration.py       ✅ 6 TESTS PASADOS
-├── examples/
-│   ├── __init__.py
-│   └── demo_visualization.py     ✅ 4 DEMOSTRACIONES
-├── data/
-│   └── sample_humeri/            (Carpeta para modelos STL)
-├── .agent.md                     ✅ COMPLETADO
-├── .instructions.md              ✅ COMPLETADO
-├── AGENTS.md                     ✅ COMPLETADO
-├── copilot-instructions.md       ✅ COMPLETADO
-├── README.md                     ✅ COMPLETADO
-├── requirements.txt              ✅ ACTUALIZADO
-└── run_tests.py                  ✅ COMPLETADO
-```
+- `src/axis/longitudinal.py`
 
-## 🎨 VISUALIZACIÓN EN ROJO
+Método por defecto:
 
-### Características Destacadas:
+- `diaphyseal_slice_axis`
 
-1. **Esferas en ROJO**:
-   ```python
-   viz.plot_sphere(center, radius, color='red')  # ✅ Color ROJO
-   ```
-   - Wireframe 3D parameterizado
-   - Totalmente personalizable
-   - Marca el centro con punto rojo
+Estado:
 
-2. **Eje Longitudinal en ROJO**:
-   ```python
-   viz.plot_axis(origin, direction, length, color='red')  # ✅ Color ROJO
-   ```
-   - Línea 3D desde cabeza a distal
-   - Marca de inicio (triángulo) en ROJO
-   - Marca de final (triángulo invertido) en ROJO
+- No usa la esfera para estimar el eje.
+- Usa PCA global solo para orientación inicial.
+- Neutraliza densidad mediante voxel downsample.
+- Detecta si el húmero parece completo por longitud proyectada.
+- En modelo completo descarta cabeza y cola.
+- En modelo incompleto descarta solo la porción proximal.
+- Divide la región de interés en slices.
+- Elimina slices con spikes de área o perímetro.
+- Ajusta el eje final con RANSAC sobre centros de slices.
+- Devuelve diagnósticos: completitud, crop, slices retenidos, inliers/outliers RANSAC.
 
-3. **Múltiples Aproximaciones en ROJO**:
-   ```python
-   viz.plot_approximations(approximations, color='red')  # ✅ TODAS EN ROJO
-   ```
+### Auditoría y Validación Morfológica
 
-## 🧪 CÓMO EJECUTAR LOS TESTS
+Archivo:
+
+- `src/audit/trail.py`
+
+Estado:
+
+- Registra pasos en formato JSON-friendly.
+- Valida semillas.
+- Valida aproximaciones por RMSE y ROC plausible.
+- Calcula métricas morfológicas:
+  - ROC.
+  - Medial offset.
+  - Posterior offset.
+  - Total offset transversal.
+- Reporta rangos de referencia, medias, desviaciones estándar y z-scores.
+
+Referencias configuradas:
+
+| Métrica | Rango | Media | SD |
+|---|---:|---:|---:|
+| ROC | 17-30 mm | 22.5 mm | 2.8 mm |
+| Medial offset | 1-14 mm | 6.8 mm | 2.5 mm |
+| Posterior offset | 0-10 mm | 2.0 mm | 2.0 mm |
+
+Decisión de validación:
+
+- Los rangos de referencia morfológica son indicadores por defecto.
+- No invalidan una esfera salvo que se use `enforce_morphology_reference=True`.
+- La validación dura mantiene RMSE y ROC plausible como criterios principales.
+
+### Demo Web Interactiva
+
+Archivo:
+
+- `examples/demo_interactive_web.py`
+
+Estado:
+
+- Permite cargar STL desde navegador.
+- Discretiza la superficie.
+- Ejecuta best-fit automático al cargar.
+- Dibuja superficie, mejor esfera, semilla automática y eje.
+- Permite hacer clic en una semilla manual para comparar.
+- Muestra:
+  - Score best-fit.
+  - ROC.
+  - RMSE.
+  - Cobertura.
+  - Candidatos válidos.
+  - Longitud de eje.
+  - Completo/incompleto.
+  - Modo de crop.
+  - RANSAC inliers.
+  - Medial offset.
+  - Posterior offset.
+  - Estado y z-scores de referencia.
+
+Parámetros CLI relevantes:
 
 ```bash
-# Opción 1: Ejecutar todos los tests
-cd /home/jeruah/Documentos/University/geometria/humero
-python3 -m pytest tests/ -v
-
-# Opción 2: Tests con cobertura
-python3 -m pytest tests/ --cov=src --cov-report=html
-
-# Opción 3: Tests individuales
-python3 -m pytest tests/test_audit.py -v
-python3 -m pytest tests/test_visualization.py -v
-python3 -m pytest tests/test_integration.py -v
+--stl
+--samples
+--synthetic-demo
+--initial-radius
+--max-error
+--best-fit-seeds
+--best-fit-top
+--host
+--port
+--no-browser
 ```
 
-## 📝 CÓMO USAR LA VISUALIZACIÓN
+## Estado de Tests
 
-```python
-from src.visualization.visualizer import Visualizer3D
-from src.audit.trail import AuditManager
-import numpy as np
+Comando:
 
-# Crear visualizador
-viz = Visualizer3D()
-viz.create_figure()
-
-# Graficar esfera en ROJO
-center = np.array([10, 20, 30])
-radius = 25.0
-viz.plot_sphere(center, radius, color='red')
-
-# Graficar eje en ROJO
-origin = np.array([10, 20, 30])
-direction = np.array([0, 0, 1])
-length = 100.0
-viz.plot_axis(origin, direction, length, color='red')
-
-# Guardar o mostrar
-viz.save('resultado.png')
-# viz.show()
-```
-
-## 🔧 DEPENDENCIAS INSTALADAS
-
-```
-numpy>=1.20
-scipy>=1.7
-scikit-learn>=1.0
-matplotlib>=3.3
-pytest>=6.0
-pytest-cov>=2.12
-```
-
-Instalar con:
 ```bash
-pip install --break-system-packages -r requirements.txt
+pytest -q
 ```
 
-## 📚 PRÓXIMOS PASOS
+Resultado actual:
 
-Para continuar con la implementación:
+```text
+49 passed
+```
 
-1. **Mesh Processing** (@mesh-processor):
-   - Implementar `src/mesh/loader.py`
-   - Implementar `src/mesh/discretizer.py`
+Cobertura funcional en tests:
 
-2. **Geometry** (@geometry-specialist):
-   - Implementar `src/geometry/curvature.py`
-   - Implementar `src/geometry/differential.py`
+- Auditoría y serialización.
+- Visualización 3D.
+- Carga STL ASCII/binaria.
+- Discretización uniforme.
+- Curvatura en región esférica.
+- Estimación de eje robusta en húmero completo e incompleto.
+- Validación de offsets morfológicos.
+- Respuesta JSON de la demo web.
+- Best-fit automático recuperando una esfera sintética conocida.
 
-3. **Validation** (@validation-auditor):
-   - Implementar `src/validation/viability.py`
+## Resultados de Smoke Test en STL de Muestra
 
-4. **Approximation** (@sphere-optimizer):
-   - Implementar `src/approximation/sphere.py`
-   - Implementar `src/optimization/refinement.py`
+Con 20 semillas y 3000 puntos:
 
-5. **Axis** (@axis-approximator):
-   - Implementar `src/axis/longitudinal.py`
+```text
+Human_humerus_2_reduced.stl
+  candidatos válidos: 4/20
+  ROC: 31.161 mm
+  RMSE: 1.825 mm
+  cobertura: 131 puntos
+  score: 1.873
 
-## 📋 CHECKLIST DE ENTREGA
+HumeroFinal1.stl
+  candidatos válidos: 14/20
+  ROC: 22.048 mm
+  RMSE: 0.287 mm
+  cobertura: 723 puntos
+  score: 0.571
 
-- ✅ Configuración de 5 agentes IA especializados
-- ✅ Sistema de auditoría completamente implementado
-- ✅ Visualizador 3D con esferas y eje en ROJO
-- ✅ 36 tests unitarios e integración PASADOS
-- ✅ Scripts de demostración funcionales
-- ✅ Documentación completa
-- ✅ Estructura de proyecto profesional
-- ✅ Requisitos instalados y configurados
+Right_humerus_bone_one-piece.stl
+  candidatos válidos: 13/20
+  ROC: 23.389 mm
+  RMSE: 1.347 mm
+  cobertura: 341 puntos
+  score: 1.084
+```
 
-## 🚀 STATUS FINAL
+Estos smoke tests verifican comportamiento del pipeline; no deben interpretarse como validación clínica.
 
-**FASE 0 Y FASES 1-2 COMPLETADAS EXITOSAMENTE** ✅
+## Decisiones Técnicas Relevantes
 
-Sistema de auditoría y visualización 3D listos para usar.
-Estructura base preparada para implementación de agentes.
+### La esfera ya no define el eje
 
----
+El eje depende solo de la nube de puntos y del análisis diafisario. Esto evita el ciclo lógico donde la validez de la esfera depende del eje y el eje depende de una esfera potencialmente inválida.
 
-**Última actualización**: 2024-06-17
-**Tests**: 36/36 PASADOS ✅
-**Cobertura**: Sistema completamente testeado
+### Modelos completos e incompletos
+
+El eje intenta adaptarse a ambos:
+
+- Completo: descarta extremos proximal y distal.
+- Incompleto: descarta la porción proximal, conserva más tallo distal disponible.
+
+### Morfología como referencia, no bloqueo automático
+
+Los rangos de ROC/MO/PO ayudan a ordenar y auditar candidatos, pero no invalidan por sí solos salvo modo estricto. Esto evita rechazar geometrías plausibles por variabilidad anatómica o por errores de marco anatómico.
+
+### Best-fit por ranking, no por primera convergencia
+
+El resultado automático no es "la primera esfera que funciona"; es la mejor candidata según score combinado. Esto permite comparar semillas y detectar candidatos razonables aunque algunas semillas fallen.
+
+## Limitaciones Pendientes
+
+- Falta segmentación explícita de la superficie articular de la cabeza.
+- El marco medial/posterior sigue siendo aproximado.
+- La detección de cabeza por expansión transversal puede fallar en STL muy parciales.
+- La cobertura depende de densidad de muestreo y calidad de normales.
+- El best-fit es heurístico; necesita validación sistemática con casos anotados.
+
+## Próximos Pasos Recomendados
+
+1. Crear un módulo de segmentación de cabeza humeral antes del ajuste esférico.
+2. Estimar marco anatómico local para medial/posterior en lugar de usar ejes globales.
+3. Guardar reportes comparables por STL en JSON/CSV.
+4. Evaluar sensibilidad de resultados a `samples`, `best_fit_seeds` y tolerancia de cobertura.
+5. Incorporar casos con ground truth o anotaciones manuales para medir precisión real.

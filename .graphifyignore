@@ -1,0 +1,9 @@
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
+graphify-out/
+data/sample_humeri/
+*.stl
+*.png

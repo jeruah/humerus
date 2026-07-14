@@ -236,7 +236,62 @@ class InteractiveWeb3D:
             hoverinfo='skip',
         ))
     
-    def plot_approximations(self, approximations: List[Dict], 
+    def plot_points_colored(
+        self,
+        points: np.ndarray,
+        values: np.ndarray,
+        name: str = 'Curvatura',
+        colorbar_title: str = 'Score',
+        size: int = 3,
+        hover_text: Optional[List[str]] = None,
+    ):
+        """
+        Grafica una nube de puntos coloreada por un valor continuo por punto.
+
+        Pensado para score de "cercanía a esfera": 0 (verde) = coincide
+        con la esfera esperada, 1 (rojo) = se aleja.
+
+        Parameters
+        ----------
+        points : np.ndarray
+            Puntos 3D (N, 3)
+        values : np.ndarray
+            Valor escalar por punto en [0, 1] (N,), mapeado a color
+        name : str
+            Nombre en la leyenda
+        colorbar_title : str
+            Título de la barra de color
+        size : int
+            Tamaño de marcador
+        hover_text : List[str], optional
+            Texto de hover por punto (por defecto muestra el valor)
+        """
+        points = np.asarray(points, dtype=float)
+        values = np.asarray(values, dtype=float)
+        if hover_text is None:
+            hover_text = [f'{name}: {v:.3f}' for v in values]
+
+        self.fig.add_trace(go.Scatter3d(
+            x=points[:, 0],
+            y=points[:, 1],
+            z=points[:, 2],
+            mode='markers',
+            name=name,
+            marker=dict(
+                size=size,
+                color=values,
+                colorscale=[[0.0, 'green'], [1.0, 'red']],
+                cmin=0.0,
+                cmax=1.0,
+                opacity=0.85,
+                showscale=True,
+                colorbar=dict(title=colorbar_title),
+            ),
+            hoverinfo='text',
+            text=hover_text,
+        ))
+
+    def plot_approximations(self, approximations: List[Dict],
                            name: str = 'Aproximaciones'):
         """
         Grafica múltiples aproximaciones de esferas.

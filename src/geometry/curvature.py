@@ -167,6 +167,101 @@ class CurvatureCalculator:
         return result
     
     @staticmethod
+    def compute_point_cloud_curvatures(
+        points: np.ndarray,
+        normals: np.ndarray,
+        k: int = 16
+    ) -> np.ndarray:
+        """
+        Calcula curvatura para una nube de puntos sin topología de malla.
+
+        A diferencia de `compute_all_curvatures` (que usa `faces` para
+        vecinos topológicos), aquí los vecinos se buscan por distancia
+        dentro de la propia nube de puntos. Útil para puntos muestreados
+        con `MeshDiscretizer`, que no son vértices de la malla original.
+
+        Parameters
+        ----------
+        points : np.ndarray
+            Puntos muestreados (shape: (N, 3))
+        normals : np.ndarray
+            Normal por punto (shape: (N, 3))
+        k : int
+            Número de vecinos más cercanos a usar (incluyéndose el punto)
+
+        Returns
+        -------
+        np.ndarray
+            Array con [k1, k2, H, K] por punto (shape: (N, 4))
+        """
+        points = np.asarray(points, dtype=float)
+        normals = np.asarray(normals, dtype=float)
+        tree = cKDTree(points)
+        k = min(k, len(points))
+        result = np.zeros((len(points), 4), dtype=float)
+
+        for idx, point in enumerate(points):
+            _, neighbor_idx = tree.query(point, k=k)
+            neighbor_idx = np.asarray(neighbor_idx)
+            neighbor_idx = neighbor_idx[neighbor_idx != idx]
+            try:
+                data = CurvatureCalculator.compute_point_curvature(
+                    point, points[neighbor_idx], normals[idx]
+                )
+                result[idx] = [
+                    data.principal_k1,
+                    data.principal_k2,
+                    data.mean_curvature,
+                    data.gaussian_curvature,
+                ]
+            except (ValueError, np.linalg.LinAlgError):
+                result[idx] = np.nan
+
+        return result
+
+    @staticmethod
+    def sphericity_score(
+        curvatures: np.ndarray,
+        radius_estimate: float = 30.0,
+        tolerance: float = 0.15
+    ) -> np.ndarray:
+        """
+        Puntúa qué tan cerca está cada punto de una superficie esférica.
+
+        Combina la misma anisotropía y error de radio que usa
+        `find_spherical_region`, pero como score continuo en [0, 1] en
+        vez de una máscara booleana: 0 = coincide con la esfera esperada,
+        1 = muy alejado (curvatura NaN también se marca como 1).
+
+        Parameters
+        ----------
+        curvatures : np.ndarray
+            Array de curvaturas (shape: (N, 4)), cada fila [k1, k2, H, K]
+        radius_estimate : float
+            Radio esperado de la esfera (mm)
+        tolerance : float
+            Anisotropía/error de radio que se considera "límite" (score 1.0)
+
+        Returns
+        -------
+        np.ndarray
+            Score por punto en [0, 1] (shape: (N,))
+        """
+        expected = 1.0 / radius_estimate
+        k1 = np.abs(curvatures[:, 0])
+        k2 = np.abs(curvatures[:, 1])
+        mean = np.abs(curvatures[:, 2])
+
+        finite = np.all(np.isfinite(curvatures[:, :4]), axis=1)
+        anisotropy = np.abs(k1 - k2) / np.maximum(np.maximum(k1, k2), 1e-12)
+        mean_error = np.abs(mean - expected) / expected
+
+        score = 0.5 * (anisotropy / tolerance) + 0.5 * (mean_error / tolerance)
+        score = np.clip(score, 0.0, 1.0)
+        score[~finite] = 1.0
+        return score
+
+    @staticmethod
     def find_spherical_region(
         curvatures: np.ndarray,
         vertices: np.ndarray,

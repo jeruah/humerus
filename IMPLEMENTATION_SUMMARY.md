@@ -1,6 +1,6 @@
 # Resumen de Implementación
 
-Última actualización: 2026-07-14
+Última actualización: 2026-07-15
 
 Este documento resume el estado real del proyecto después de las iteraciones recientes. La documentación de agentes IA, Copilot y quickstart fue retirada porque ya no representa el flujo de trabajo ni ayuda a mejorar la precisión geométrica.
 
@@ -28,11 +28,15 @@ Archivos:
 
 - `src/mesh/loader.py`
 - `src/mesh/discretizer.py`
+- `src/mesh/cleaner.py`
 
 Estado:
 
 - Carga STL ASCII y binario.
 - Extrae vértices, caras y normales.
+- Limpia triángulos degenerados y vértices duplicados.
+- Calcula áreas, centroides, normales coherentes y adyacencia por aristas.
+- Filtra componentes conectados pequeños cuando se requiere conservar solo el componente principal.
 - Discretiza superficie con muestreo uniforme.
 - Entrega `surface_points` y `surface_normals` para el pipeline geométrico.
 
@@ -41,41 +45,71 @@ Estado:
 Archivo:
 
 - `src/approximation/sphere.py`
+- `src/geometry/sphere.py`
 
 Estado:
 
 - Implementa `SphericalApproximator`.
-- Ajusta esfera por least-squares local.
+- Ajusta esfera usando primitivas comunes de `SphereGeometry`.
 - Itera desde una semilla de superficie.
 - Registra inicialización, iteraciones y resultado en `AuditTrail`.
 - Controla convergencia por cambio de centro/radio.
 
-### Best-Fit Automático Poblacional
+### Primitivas Geométricas de Esfera
 
 Archivo:
 
-- `src/optimization/best_fit.py`
-
-Clase:
-
-- `HumeralHeadBestFitSearch`
+- `src/geometry/sphere.py`
 
 Estado:
 
-- Toma `n_seeds` puntos candidatos.
-- Detecta el extremo probable de cabeza comparando expansión transversal en ambos extremos del eje.
-- Prioriza semillas alejadas del eje para evitar el tallo.
-- Ajusta una esfera por semilla.
-- Evalúa cada candidata con una función de costo.
-- Retorna `best`, `top_candidates`, conteo de candidatos válidos, cobertura y auditoría.
+- Calcula esfera desde cuatro puntos no coplanares.
+- Calcula ajuste algebraico inicial.
+- Calcula residuos radiales y alineación normal-radial.
+- Calcula cobertura angular.
+- Ejecuta refit geométrico robusto con pérdida Huber.
+- Es usado por el aproximador clásico, RANSAC, validación de semillas y análisis diferencial.
+
+### Best-Fit Automático por RANSAC
+
+Archivo:
+
+- `src/optimization/sphere_ransac.py`
+
+Clase:
+
+- `SphereRansacFitter`
+
+Estado:
+
+- Evalúa ambos extremos del húmero para no confundir cabeza humeral y codo.
+- Selecciona cuatro caras distribuidas por extremo e iteración.
+- Calcula esfera inicial desde cuatro puntos no coplanares.
+- Filtra por rango plausible de ROC.
+- Evalúa residuo radial y concordancia normal.
+- Exige que el soporte esté en el hemisferio articular externo respecto al eje diafisario.
+- Conserva el componente conectado más grande de triángulos compatibles.
+- Incluye ROC, medial offset y posterior offset en el ranking inicial de candidatos.
+- Expande la región articular por vecindad con restricciones de residuo, normal y suavidad.
+- Reajusta centro/radio con minimización geométrica robusta usando pérdida Huber.
+- Recorta un núcleo conectado de bajo residuo radial después del refit.
+- Acota el radio durante el refit al rango plausible `17-40 mm`.
+- Retorna esfera, región articular, score, área, MAD, P95 radial, cobertura angular, compacidad, lado articular y conectividad.
 
 Componentes del score:
 
-- RMSE normalizado.
+- MAD normalizado.
+- Área compatible.
+- Cobertura angular.
+- Dominancia de componente conectado.
+- Concordancia radial de normales.
+- Alineación con el lado articular de la cabeza.
 - Penalización morfológica por z-scores.
-- Penalización por baja cobertura de superficie proximal.
-- Penalización por falta de convergencia.
-- Penalización por estar fuera de rangos de referencia.
+- Penalización explícita por métricas fuera de referencia.
+
+Compatibilidad:
+
+- `src/optimization/best_fit.py` sigue disponible como fallback poblacional para flujos basados solo en puntos.
 
 ### Eje Longitudinal Robusto
 
@@ -105,12 +139,15 @@ Estado:
 Archivo:
 
 - `src/audit/trail.py`
+- `src/validation/sphere.py`
 
 Estado:
 
-- Registra pasos en formato JSON-friendly.
+- `SphereValidator` concentra las reglas de aceptación/rechazo.
+- `AuditTrail` registra pasos en formato JSON-friendly y delega las reglas.
 - Valida semillas.
 - Valida aproximaciones por RMSE y ROC plausible.
+- Valida soporte superficial RANSAC por área, conectividad, conteo de caras y parámetros finitos.
 - Calcula métricas morfológicas:
   - ROC.
   - Medial offset.
@@ -141,14 +178,22 @@ Archivo:
 Estado:
 
 - Permite cargar STL desde navegador.
+- Limpia la malla STL antes del cálculo automático.
 - Discretiza la superficie.
-- Ejecuta best-fit automático al cargar.
-- Dibuja superficie, mejor esfera, semilla automática y eje.
+- Ejecuta RANSAC esférico automático al cargar STL real.
+- Dibuja superficie, esfera completa, región articular RANSAC, marcador automático y eje.
 - Permite hacer clic en una semilla manual para comparar.
 - Muestra:
   - Score best-fit.
   - ROC.
   - RMSE.
+  - MAD.
+  - P95 radial.
+  - Área de inliers.
+  - Cobertura angular.
+  - Compacidad angular.
+  - Lado articular.
+  - Conectividad.
   - Cobertura.
   - Candidatos válidos.
   - Longitud de eje.
@@ -185,7 +230,7 @@ pytest -q
 Resultado actual:
 
 ```text
-49 passed
+56 passed
 ```
 
 Cobertura funcional en tests:
@@ -197,34 +242,60 @@ Cobertura funcional en tests:
 - Curvatura en región esférica.
 - Estimación de eje robusta en húmero completo e incompleto.
 - Validación de offsets morfológicos.
+- Delegación de reglas desde auditoría hacia `SphereValidator`.
 - Respuesta JSON de la demo web.
 - Best-fit automático recuperando una esfera sintética conocida.
+- Limpieza de malla y adyacencia triangular.
+- Esfera exacta desde cuatro puntos.
+- RANSAC esférico tolerando tallo/outliers.
+- Serialización de región articular detectada.
 
 ## Resultados de Smoke Test en STL de Muestra
 
-Con 20 semillas y 3000 puntos:
+Con RANSAC de 1000 iteraciones sobre mallas limpias:
 
 ```text
 Human_humerus_2_reduced.stl
-  candidatos válidos: 4/20
-  ROC: 31.161 mm
-  RMSE: 1.825 mm
-  cobertura: 131 puntos
-  score: 1.873
+  ROC: 20.020 mm
+  MO: 9.893 mm
+  PO: 2.540 mm
+  RMSE: 0.374 mm
+  MAD: 0.214 mm
+  P95 radial: 0.731 mm
+  caras compatibles: 1287
+  area ratio: 0.0802
+  cobertura angular: 0.842
+  compacidad angular: 0.622
+  lado articular: 0.563
+  score: 4.949
 
 HumeroFinal1.stl
-  candidatos válidos: 14/20
-  ROC: 22.048 mm
-  RMSE: 0.287 mm
-  cobertura: 723 puntos
-  score: 0.571
+  ROC: 21.089 mm
+  MO: 3.957 mm
+  PO: 2.806 mm
+  RMSE: 0.303 mm
+  MAD: 0.141 mm
+  P95 radial: 0.695 mm
+  caras compatibles: 355
+  area ratio: 0.1263
+  cobertura angular: 0.896
+  compacidad angular: 0.606
+  lado articular: 0.566
+  score: 3.137
 
 Right_humerus_bone_one-piece.stl
-  candidatos válidos: 13/20
-  ROC: 23.389 mm
-  RMSE: 1.347 mm
-  cobertura: 341 puntos
-  score: 1.084
+  ROC: 21.188 mm
+  MO: 14.402 mm
+  PO: 7.355 mm
+  RMSE: 0.367 mm
+  MAD: 0.199 mm
+  P95 radial: 0.786 mm
+  caras compatibles: 411
+  area ratio: 0.0750
+  cobertura angular: 0.894
+  compacidad angular: 0.566
+  lado articular: 0.546
+  score: 22.395
 ```
 
 Estos smoke tests verifican comportamiento del pipeline; no deben interpretarse como validación clínica.
@@ -246,22 +317,26 @@ El eje intenta adaptarse a ambos:
 
 Los rangos de ROC/MO/PO ayudan a ordenar y auditar candidatos, pero no invalidan por sí solos salvo modo estricto. Esto evita rechazar geometrías plausibles por variabilidad anatómica o por errores de marco anatómico.
 
-### Best-fit por ranking, no por primera convergencia
+### Best-fit por RANSAC, no por primera convergencia
 
-El resultado automático no es "la primera esfera que funciona"; es la mejor candidata según score combinado. Esto permite comparar semillas y detectar candidatos razonables aunque algunas semillas fallen.
+El resultado automático no es "la primera esfera que funciona"; RANSAC explora hipótesis de cuatro puntos, conserva regiones conectadas y refina el mejor soporte geométrico.
+
+### La conectividad ahora importa
+
+La superficie articular se evalúa como triángulos conectados, no solo como puntos cercanos a una esfera. Esto penaliza parches pequeños y superficies aisladas aunque su RMSE local sea bajo.
 
 ## Limitaciones Pendientes
 
-- Falta segmentación explícita de la superficie articular de la cabeza.
+- La segmentación articular RANSAC necesita validación contra anotaciones manuales.
 - El marco medial/posterior sigue siendo aproximado.
 - La detección de cabeza por expansión transversal puede fallar en STL muy parciales.
-- La cobertura depende de densidad de muestreo y calidad de normales.
-- El best-fit es heurístico; necesita validación sistemática con casos anotados.
+- La cobertura depende de conectividad, resolución de malla y calidad de normales.
+- La generación del parche faltante de cabeza todavía no está implementada.
 
 ## Próximos Pasos Recomendados
 
-1. Crear un módulo de segmentación de cabeza humeral antes del ajuste esférico.
+1. Validar la región articular RANSAC con casos anotados.
 2. Estimar marco anatómico local para medial/posterior en lugar de usar ejes globales.
 3. Guardar reportes comparables por STL en JSON/CSV.
-4. Evaluar sensibilidad de resultados a `samples`, `best_fit_seeds` y tolerancia de cobertura.
-5. Incorporar casos con ground truth o anotaciones manuales para medir precisión real.
+4. Evaluar sensibilidad de resultados a iteraciones RANSAC, tolerancia de distancia y ángulo normal.
+5. Implementar contorno articular y generación de parche faltante como fase posterior.

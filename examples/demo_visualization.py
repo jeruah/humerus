@@ -15,8 +15,8 @@ import numpy as np
 # Añadir directorio src al path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.audit.trail import AuditManager
-from src.visualization.visualizer import InteractiveVisualizer, Visualizer3D
+from humero.audit.trail import AuditManager
+from humero.visualization.visualizer import InteractiveVisualizer, Visualizer3D
 
 
 def demo_single_sphere_and_axis():

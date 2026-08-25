@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from src.audit.trail import AuditManager, AuditTrail, StepRecord
+from humero.audit.trail import AuditManager, AuditTrail, StepRecord
 
 
 class TestStepRecord(unittest.TestCase):

@@ -19,7 +19,7 @@
 ## Uso Rápido
 
 ```python
-from src.visualization.interactive_web import InteractiveWeb3D
+from humero.visualization.interactive_web import InteractiveWeb3D
 import numpy as np
 
 viz = InteractiveWeb3D()
@@ -115,7 +115,7 @@ viz.save('/tmp/resultado.html')
 
 ### Ejemplo 1: Básico
 ```python
-from src.visualization.interactive_web import InteractiveWeb3D
+from humero.visualization.interactive_web import InteractiveWeb3D
 import numpy as np
 
 viz = InteractiveWeb3D(title="Mi Visualización")

@@ -16,7 +16,7 @@ def main() -> int:
     ]
     if "--lint" in sys.argv:
         commands.append(
-            ([sys.executable, "-m", "ruff", "check", "src", "examples", "tests"], "Lint (ruff)")
+            ([sys.executable, "-m", "ruff", "check", "humero", "examples", "tests"], "Lint (ruff)")
         )
 
     ok = True

@@ -20,7 +20,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Lint (ruff)
-        run: ruff check src examples tests run_tests.py
+        run: ruff check humero examples tests run_tests.py
 
       - name: Test (pytest + cobertura)
         run: pytest

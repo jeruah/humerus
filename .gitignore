@@ -13,3 +13,8 @@ env/
 
 .DS_Store
 graphify-out/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/

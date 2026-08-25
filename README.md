@@ -12,10 +12,10 @@ El enfoque actual ya no depende de una sola semilla manual ni de comparar el di�
 - Aproximación iterativa de esfera desde una semilla.
 - Búsqueda automática principal con RANSAC esférico de 4 puntos y refit robusto.
 - Segmentación articular conectada sobre triángulos compatibles.
-- Primitivas geométricas de esfera centralizadas en `src/geometry/sphere.py`.
-- Reglas de validación de esfera centralizadas en `src/validation/sphere.py`.
+- Primitivas geométricas de esfera centralizadas en `humero/geometry/sphere.py`.
+- Reglas de validación de esfera centralizadas en `humero/validation/sphere.py`.
 - Configuración central (rangos, tolerancias, referencias morfológicas y marco
-  anatómico) en `src/config/`.
+  anatómico) en `humero/config/`.
 - Prior académico por ajuste local de esfera (`use_curvature_prior`) que guía
   el muestreo y la segmentación del RANSAC hacia el casquete articular.
 - Estimación robusta del eje longitudinal desde la diáfisis, sin usar la esfera.
@@ -29,6 +29,15 @@ El enfoque actual ya no depende de una sola semilla manual ni de comparar el di�
 ```bash
 cd /home/jeruah/Documentos/University/geometria/humero
 pip install -r requirements.txt
+```
+
+El proyecto es un **paquete instalable** (`humero`). Para usarlo desde otra
+aplicación:
+
+```bash
+pip install .                 # instalar el paquete (incluye STL de muestra)
+# o en modo desarrollo:
+pip install -e .
 ```
 
 Dependencias principales:
@@ -52,7 +61,30 @@ Ejecutar tests:
 pytest -q
 ```
 
-Abrir la demo web sin STL precargado:
+### Uso como paquete
+
+```python
+from humero import STLLoader, MeshCleaner, AxisApproximator, SphereRansacFitter, sample_stl
+
+mesh = STLLoader.load(str(sample_stl("HumeroFinal1.stl")))
+cleaned = MeshCleaner().clean(mesh.vertices, mesh.faces)
+axis = AxisApproximator.compute_longitudinal_axis(cleaned.face_centroids)
+result = SphereRansacFitter().fit(cleaned, axis=axis)
+print(result["morphology"]["roc"], result["rmse"], result["valid"])
+```
+
+Los STL de muestra se resuelven con `humero.sample_data_dir()` /
+`humero.sample_stl(name)`, que apuntan a los archivos incluidos en el paquete.
+
+### Entry points (demos instaladas)
+
+```bash
+humero-demo --synthetic-demo --no-browser
+humero-risk-map --synthetic-demo --output /tmp/risk.html
+humero-risk-map-interactive --synthetic-demo --no-browser --port 8766
+```
+
+O directamente desde el repositorio:
 
 ```bash
 python examples/demo_interactive_web.py
@@ -62,7 +94,7 @@ Precargar un STL y ejecutar el best-fit automático al iniciar:
 
 ```bash
 python examples/demo_interactive_web.py \
-  --stl data/sample_humeri/HumeroFinal1.stl \
+  --stl humero/data/sample_humeri/HumeroFinal1.stl \
   --samples 8000 \
   --best-fit-seeds 1000 \
   --best-fit-top 5
@@ -98,7 +130,7 @@ La interfaz permite:
 
 ## Flujo Geométrico Actual
 
-1. `STLLoader` carga la malla desde `src/mesh/loader.py`.
+1. `STLLoader` carga la malla desde `humero/mesh/loader.py`.
 2. `MeshCleaner` elimina degenerados, compacta vértices, calcula áreas/normales/centroides y construye adyacencia triangular.
 3. `MeshDiscretizer` genera puntos y normales de superficie para visualización y comparación manual.
 4. `AxisApproximator` estima el eje diafisario:
@@ -128,7 +160,7 @@ La interfaz permite:
 
 ## Best-Fit Automático por RANSAC
 
-La clase principal nueva está en `src/optimization/sphere_ransac.py`:
+La clase principal nueva está en `humero/optimization/sphere_ransac.py`:
 
 ```python
 from src.mesh.cleaner import MeshCleaner
@@ -158,7 +190,7 @@ Además, el soporte debe caer en el hemisferio articular: el lado de la esfera q
 
 Antes de la búsqueda, un prior académico por ajuste local de esfera (`use_curvature_prior=True`) marca las caras cuyo vecindario se ajusta a una esfera con radio fisiológico y RMSE bajo. Este prior filtra las regiones candidatas de cada extremo, pondera el muestreo de cuatro puntos y restringe la expansión conectada, concentrando la búsqueda en el casquete articular. Es el equivalente a un estudio de curvatura implícito (κ₁ ≈ κ₂ ≈ 1/R) pero robusto a mallas decimadas. Se puede desactivar con `SphereRansacConfig(use_curvature_prior=False)` para comparar.
 
-`src/optimization/best_fit.py` se mantiene como fallback poblacional para datos sin malla limpia, por ejemplo el demo sintético basado solo en puntos.
+`humero/optimization/best_fit.py` se mantiene como fallback poblacional para datos sin malla limpia, por ejemplo el demo sintético basado solo en puntos.
 
 ## Métricas Morfológicas
 
@@ -188,14 +220,8 @@ Notas importantes:
 
 ```text
 humero/
-├── data/sample_humeri/              # STL de ejemplo
-├── examples/
-│   ├── demo_interactive_web.py      # Demo principal con carga STL y best-fit
-│   ├── demo_visualization.py
-│   ├── demo_wayland.py
-│   ├── demo_head_risk_map.py
-│   └── demo_head_risk_map_interactive.py
-├── src/
+├── humero/
+│   ├── data/sample_humeri/          # STL de ejemplo (se incluyen en el paquete)
 │   ├── approximation/sphere.py      # Ajuste iterativo de esfera
 │   ├── audit/trail.py               # Auditoría y métricas morfológicas
 │   ├── axis/longitudinal.py         # Eje diafisario robusto
@@ -207,12 +233,15 @@ humero/
 │   │   ├── sphere_ransac.py         # RANSAC esférico, prior y segmentación articular
 │   │   └── refinement.py
 │   ├── validation/                  # Validación de semillas y esferas
-│   └── visualization/               # Visualización matplotlib/Plotly
+│   ├── visualization/               # Visualización matplotlib/Plotly
+│   └── web/                         # Demos web (servidor de selección y mapas de riesgo)
+├── examples/                        # Wrappers de las demos
 └── tests/
     ├── _synthetic.py                # Generadores de húmero sintético compartidos
     ├── test_audit.py
     ├── test_integration.py
     ├── test_mesh_and_geometry.py
+    ├── test_risk_map.py
     ├── test_scientific_pipeline.py
     ├── test_visualization.py
     └── test_web_and_serialization.py

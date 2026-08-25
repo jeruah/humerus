@@ -10,7 +10,7 @@ from tempfile import NamedTemporaryFile
 
 import matplotlib.pyplot as plt
 
-from src.visualization.visualizer import InteractiveVisualizer, Visualizer3D
+from humero.visualization.visualizer import InteractiveVisualizer, Visualizer3D
 
 
 class TestVisualizer3D(unittest.TestCase):

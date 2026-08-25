@@ -26,9 +26,9 @@ La documentación viva queda concentrada en:
 
 Archivos:
 
-- `src/mesh/loader.py`
-- `src/mesh/discretizer.py`
-- `src/mesh/cleaner.py`
+- `humero/mesh/loader.py`
+- `humero/mesh/discretizer.py`
+- `humero/mesh/cleaner.py`
 
 Estado:
 
@@ -44,8 +44,8 @@ Estado:
 
 Archivo:
 
-- `src/approximation/sphere.py`
-- `src/geometry/sphere.py`
+- `humero/approximation/sphere.py`
+- `humero/geometry/sphere.py`
 
 Estado:
 
@@ -59,7 +59,7 @@ Estado:
 
 Archivo:
 
-- `src/geometry/sphere.py`
+- `humero/geometry/sphere.py`
 
 Estado:
 
@@ -74,7 +74,7 @@ Estado:
 
 Archivo:
 
-- `src/optimization/sphere_ransac.py`
+- `humero/optimization/sphere_ransac.py`
 
 Clase:
 
@@ -110,13 +110,13 @@ Componentes del score:
 
 Compatibilidad:
 
-- `src/optimization/best_fit.py` sigue disponible como fallback poblacional para flujos basados solo en puntos.
+- `humero/optimization/best_fit.py` sigue disponible como fallback poblacional para flujos basados solo en puntos.
 
 ### Eje Longitudinal Robusto
 
 Archivo:
 
-- `src/axis/longitudinal.py`
+- `humero/axis/longitudinal.py`
 
 Método por defecto:
 
@@ -139,8 +139,8 @@ Estado:
 
 Archivo:
 
-- `src/audit/trail.py`
-- `src/validation/sphere.py`
+- `humero/audit/trail.py`
+- `humero/validation/sphere.py`
 
 Estado:
 
@@ -174,7 +174,16 @@ Decisión de validación:
 
 Archivo:
 
-- `examples/demo_interactive_web.py`
+- `humero/web/server.py` (lógica) y `examples/demo_interactive_web.py` (wrapper de compatibilidad)
+- `humero/web/risk_map.py` y `humero/web/risk_map_interactive.py` (mapas de riesgo)
+
+Entry points instalables:
+
+```bash
+humero-demo
+humero-risk-map
+humero-risk-map-interactive
+```
 
 Estado:
 

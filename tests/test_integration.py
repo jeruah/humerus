@@ -4,8 +4,8 @@ import unittest
 
 import numpy as np
 
-from src.audit.trail import AuditManager, AuditTrail
-from src.visualization.visualizer import Visualizer3D
+from humero.audit.trail import AuditManager, AuditTrail
+from humero.visualization.visualizer import Visualizer3D
 
 # Reproducibilidad: los tests usan np.random global; se siembra una sola vez.
 np.random.seed(0)

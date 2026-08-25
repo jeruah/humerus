@@ -15,8 +15,8 @@ from examples.demo_interactive_web import (
     create_selection_server,
     is_point_inside_surface_volume,
 )
-from src.mesh.cleaner import MeshCleaner
-from src.mesh.discretizer import MeshDiscretizer
+from humero.mesh.cleaner import MeshCleaner
+from humero.mesh.discretizer import MeshDiscretizer
 from tests._synthetic import synthetic_humerus_mesh
 
 

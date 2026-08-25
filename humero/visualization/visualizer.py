@@ -8,11 +8,15 @@ Este módulo proporciona herramientas para visualizar:
 """
 
 
+import os
+
 import matplotlib
 import numpy as np
 
-# Usar Agg backend que siempre funciona sin GUI
-matplotlib.use('Agg')
+# Backend por defecto: Agg (headless). El host puede elegir otro exportando
+# la variable de entorno MPLBACKEND (se respeta si ya está configurada).
+if "MPLBACKEND" not in os.environ:
+    matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection

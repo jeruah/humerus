@@ -3,16 +3,16 @@
 import numpy as np
 import pytest
 
-from src.geometry.curvature import CurvatureCalculator, CurvatureData
-from src.geometry.differential import DifferentialAnalyzer
-from src.geometry.sphere import SphereGeometry
-from src.mesh.cleaner import MeshCleaner
-from src.mesh.discretizer import MeshDiscretizer
-from src.mesh.loader import STLLoader
-from src.optimization.refinement import SphereOptimizer
-from src.validation.sphere import SphereValidator, SurfaceSupportValidationConfig
-from src.validation.viability import SeedValidator
-from src.visualization.interactive_web import InteractiveWeb3D
+from humero.geometry.curvature import CurvatureCalculator, CurvatureData
+from humero.geometry.differential import DifferentialAnalyzer
+from humero.geometry.sphere import SphereGeometry
+from humero.mesh.cleaner import MeshCleaner
+from humero.mesh.discretizer import MeshDiscretizer
+from humero.mesh.loader import STLLoader
+from humero.optimization.refinement import SphereOptimizer
+from humero.validation.sphere import SphereValidator, SurfaceSupportValidationConfig
+from humero.validation.viability import SeedValidator
+from humero.visualization.interactive_web import InteractiveWeb3D
 
 
 def _tetrahedron():

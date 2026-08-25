@@ -25,8 +25,17 @@ dev = [
     "ruff>=0.5",
 ]
 
+[project.scripts]
+humero-demo = "humero.web.server:main"
+humero-risk-map = "humero.web.risk_map:main"
+humero-risk-map-interactive = "humero.web.risk_map_interactive:main"
+
 [tool.setuptools.packages.find]
-include = ["src*"]
+where = ["."]
+include = ["humero*"]
+
+[tool.setuptools.package-data]
+humero = ["data/sample_humeri/*.stl"]
 
 [tool.ruff]
 line-length = 120
@@ -47,11 +56,14 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=src --cov-report=term-missing --cov-fail-under=85"
+addopts = "--cov=humero --cov-report=term-missing --cov-fail-under=85"
 
 [tool.coverage.run]
 branch = true
-source = ["src"]
+source = ["humero"]
+# El paquete incluye demos web (humero.web.*) que son app glue; el umbral de
+# cobertura aplica a la librería (cálculo), no al servidor/HTML de las demos.
+omit = ["humero/web/*"]
 
 [tool.coverage.report]
 show_missing = true

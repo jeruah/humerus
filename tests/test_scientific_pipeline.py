@@ -12,20 +12,21 @@ from examples.demo_interactive_web import (
     compute_from_seed,
     result_to_response,
 )
-from src.approximation.sphere import SphericalApproximator
-from src.audit.trail import AuditTrail
-from src.axis.longitudinal import AxisApproximator
-from src.geometry.curvature import CurvatureCalculator, CurvatureData
-from src.geometry.sphere import SphereGeometry
-from src.mesh.cleaner import MeshCleaner
-from src.mesh.discretizer import MeshDiscretizer
-from src.mesh.loader import STLLoader
-from src.optimization.best_fit import HumeralHeadBestFitSearch
-from src.optimization.refinement import SphereOptimizer
-from src.optimization.sphere_ransac import SphereRansacConfig, SphereRansacFitter
-from src.validation.sphere import ApproximationValidationConfig, SphereValidator
-from src.validation.viability import SeedValidator
-from src.visualization.interactive_web import InteractiveWeb3D
+from humero import sample_stl
+from humero.approximation.sphere import SphericalApproximator
+from humero.audit.trail import AuditTrail
+from humero.axis.longitudinal import AxisApproximator
+from humero.geometry.curvature import CurvatureCalculator, CurvatureData
+from humero.geometry.sphere import SphereGeometry
+from humero.mesh.cleaner import MeshCleaner
+from humero.mesh.discretizer import MeshDiscretizer
+from humero.mesh.loader import STLLoader
+from humero.optimization.best_fit import HumeralHeadBestFitSearch
+from humero.optimization.refinement import SphereOptimizer
+from humero.optimization.sphere_ransac import SphereRansacConfig, SphereRansacFitter
+from humero.validation.sphere import ApproximationValidationConfig, SphereValidator
+from humero.validation.viability import SeedValidator
+from humero.visualization.interactive_web import InteractiveWeb3D
 from tests._synthetic import synthetic_humerus_mesh, synthetic_humerus_points
 
 
@@ -348,7 +349,7 @@ def test_ransac_score_penalizes_distal_local_sphere_with_bad_morphology():
 
 
 def test_ransac_compares_both_ends_and_rejects_elbow_sphere_on_sample_stl():
-    mesh = STLLoader.load("data/sample_humeri/Right_humerus_bone_one-piece.stl")
+    mesh = STLLoader.load(str(sample_stl("Right_humerus_bone_one-piece.stl")))
     cleaned = MeshCleaner().clean(mesh.vertices, mesh.faces)
     axis = AxisApproximator.compute_longitudinal_axis(cleaned.face_centroids)
     result = SphereRansacFitter(

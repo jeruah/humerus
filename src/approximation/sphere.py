@@ -1,7 +1,9 @@
 """Aproximación de esfera en superficie articular."""
 
+from typing import Any
+
 import numpy as np
-from typing import Dict, Optional, Any
+
 from ..audit.trail import AuditTrail
 from ..geometry.sphere import SphereGeometry
 
@@ -44,9 +46,9 @@ class SphericalApproximator:
         seed_point: np.ndarray,
         surface_points: np.ndarray,
         surface_normals: np.ndarray,
-        audit_trail: Optional[AuditTrail] = None,
+        audit_trail: AuditTrail | None = None,
         initial_radius: float = 30.0
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Aproxima esfera comenzando desde semilla.
         
@@ -104,7 +106,7 @@ class SphericalApproximator:
             audit_trail.log_step("sphere_initialization", {
                 "seed": seed_point.tolist(),
                 "initial_radius": radius,
-                "surface_points": int(len(surface_points)),
+                "surface_points": len(surface_points),
             })
 
         for iteration in range(1, self.max_iterations + 1):
@@ -123,7 +125,7 @@ class SphericalApproximator:
             if audit_trail:
                 audit_trail.log_step("sphere_iteration", {
                     "iteration": iteration,
-                    "local_points": int(len(local_points)),
+                    "local_points": len(local_points),
                     "center": center_new.tolist(),
                     "radius": float(radius_new),
                     "error": float(error),
@@ -142,7 +144,7 @@ class SphericalApproximator:
             "iterations": iteration,
             "converged": converged,
             "seed": seed_point,
-            "local_point_count": int(len(local_indices)),
+            "local_point_count": len(local_indices),
         }
 
         if audit_trail:
@@ -202,7 +204,7 @@ class SphericalApproximator:
         points: np.ndarray,
         initial_center: np.ndarray,
         initial_radius: float
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Ajusta esfera a conjunto de puntos.
         

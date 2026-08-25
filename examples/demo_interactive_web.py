@@ -19,7 +19,7 @@ import tempfile
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any
 from urllib.parse import unquote
 
 import numpy as np
@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.approximation.sphere import SphericalApproximator
 from src.audit.trail import AuditTrail
 from src.axis.longitudinal import AxisApproximator
+from src.config import DEFAULT_MEDIAL_DIRECTION, DEFAULT_POSTERIOR_DIRECTION
 from src.mesh.cleaner import CleanedMesh, MeshCleaner
 from src.mesh.discretizer import MeshDiscretizer
 from src.mesh.loader import STLLoader
@@ -40,7 +41,7 @@ from src.optimization.sphere_ransac import SphereRansacConfig, SphereRansacFitte
 from src.visualization.interactive_web import InteractiveWeb3D
 
 
-def synthetic_humerus_points() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def synthetic_humerus_points() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Crea una cabeza semi-esferica con diafisis cilindrica para pruebas."""
     center = np.array([12.0, 3.0, 80.0])
     radius = 22.0
@@ -77,14 +78,14 @@ def synthetic_humerus_points() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     return points, normals, seed_candidates
 
 
-def load_surface_from_stl(stl_path: str, samples: int) -> Tuple[np.ndarray, np.ndarray]:
+def load_surface_from_stl(stl_path: str, samples: int) -> tuple[np.ndarray, np.ndarray]:
     """Carga y discretiza un STL real."""
     mesh = STLLoader.load(stl_path)
     discretizer = MeshDiscretizer()
     return discretizer.discretize_uniform(mesh.vertices, mesh.faces, samples, random_seed=42)
 
 
-def load_cleaned_surface_from_stl(stl_path: str, samples: int) -> Tuple[CleanedMesh, np.ndarray, np.ndarray]:
+def load_cleaned_surface_from_stl(stl_path: str, samples: int) -> tuple[CleanedMesh, np.ndarray, np.ndarray]:
     """Carga STL, limpia malla y discretiza su superficie limpia."""
     mesh = STLLoader.load(stl_path)
     cleaned = MeshCleaner().clean(mesh.vertices, mesh.faces)
@@ -98,7 +99,7 @@ def load_cleaned_surface_from_stl(stl_path: str, samples: int) -> Tuple[CleanedM
     return cleaned, points, normals
 
 
-def load_demo_surface(args: argparse.Namespace) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_demo_surface(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Carga superficie desde STL o, solo si se solicita, usa datos sinteticos."""
     if args.stl:
         surface_points, surface_normals = load_surface_from_stl(args.stl, args.samples)
@@ -142,7 +143,7 @@ def sphere_surface_trace(center: np.ndarray, radius: float, name: str) -> go.Sur
     )
 
 
-def axis_traces(axis: Dict[str, Any]) -> list:
+def axis_traces(axis: dict[str, Any]) -> list:
     """Crea trazas Plotly para el eje longitudinal."""
     origin = axis["origin"]
     end = axis["distal_point"]
@@ -154,7 +155,7 @@ def axis_traces(axis: Dict[str, Any]) -> list:
             y=[origin[1], end[1]],
             z=[origin[2], end[2]],
             mode="lines",
-            name="Eje longitudinal PCA",
+            name="Eje diafisario",
             line=dict(color="red", width=8),
             hoverinfo="skip",
             meta={"resultTrace": True},
@@ -164,8 +165,8 @@ def axis_traces(axis: Dict[str, Any]) -> list:
             y=[midpoint[1]],
             z=[midpoint[2]],
             mode="text",
-            name="Longitud eje PCA",
-            text=[f"Eje PCA: {length:.2f} mm"],
+            name="Longitud del eje",
+            text=[f"Eje diafisario: {length:.2f} mm"],
             textposition="middle right",
             textfont=dict(color="darkred", size=13),
             hoverinfo="skip",
@@ -209,16 +210,40 @@ def best_fit_seed_trace(seed: np.ndarray, score: float) -> go.Scatter3d:
     )
 
 
+def head_region_points(surface_points: np.ndarray, axis: dict[str, Any]) -> np.ndarray:
+    """Puntos de la región proximal (cabeza) usados para validar la semilla.
+
+    La semilla clicada solo es viable si cae dentro de la cabeza humeral, no
+    en cualquier punto del hueso. Se toma un radio proporcional a la longitud
+    del eje alrededor de la posición de cabeza estimada.
+    """
+    points = np.asarray(surface_points, dtype=float)
+    head_position = axis.get("head_position")
+    if head_position is None:
+        head_position = AxisApproximator.find_head_position(points)
+    head_position = np.asarray(head_position, dtype=float)
+    head_radius = float(np.clip(0.35 * float(axis.get("length", 0.0)), 35.0, 90.0))
+    if head_radius <= 0 or head_position.shape != (3,):
+        return points
+    distances = np.linalg.norm(points - head_position, axis=1)
+    return points[distances <= head_radius]
+
+
 def compute_from_seed(
     seed: np.ndarray,
     surface_points: np.ndarray,
     surface_normals: np.ndarray,
     initial_radius: float,
     max_error: float,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Calcula esfera, eje y auditoria para una semilla de superficie."""
+    axis = AxisApproximator.compute_longitudinal_axis(
+        surface_points,
+        method="diaphyseal_slice_axis",
+    )
+
     audit = AuditTrail("clicked_seed")
-    audit.validate_seed(seed, surface_points, curvature_threshold=0.1)
+    audit.validate_seed(seed, head_region_points(surface_points, axis), curvature_threshold=0.1)
 
     approximator = SphericalApproximator(max_iterations=30, convergence_threshold=1e-5)
     sphere = approximator.approximate_from_seed(
@@ -228,17 +253,13 @@ def compute_from_seed(
         audit_trail=audit,
         initial_radius=initial_radius,
     )
-    axis = AxisApproximator.compute_longitudinal_axis(
-        surface_points,
-        method="diaphyseal_slice_axis",
-    )
     audit.is_valid_approximation(
         sphere,
         max_error=max_error,
         axis=axis,
         surface_points=surface_points,
-        medial_direction=np.array([1.0, 0.0, 0.0]),
-        posterior_direction=np.array([0.0, 1.0, 0.0]),
+        medial_direction=DEFAULT_MEDIAL_DIRECTION,
+        posterior_direction=DEFAULT_POSTERIOR_DIRECTION,
     )
 
     return {
@@ -258,7 +279,7 @@ def compute_best_fit_search(
     initial_radius: float,
     max_error: float,
     cleaned_mesh: CleanedMesh | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Ejecuta búsqueda automática de best-fit sphere."""
     if cleaned_mesh is not None:
         axis = AxisApproximator.compute_longitudinal_axis(
@@ -291,10 +312,10 @@ def compute_best_fit_search(
 
 
 def ransac_fit_to_best_fit(
-    result: Dict[str, Any],
+    result: dict[str, Any],
     cleaned_mesh: CleanedMesh,
     audit: AuditTrail,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Adapta el resultado RANSAC al contrato JSON usado por la demo."""
     sphere = {
         "center": result["center"],
@@ -349,7 +370,7 @@ def ransac_fit_to_best_fit(
     }
 
 
-def best_fit_to_response(best_fit: Dict[str, Any]) -> Dict[str, Any]:
+def best_fit_to_response(best_fit: dict[str, Any]) -> dict[str, Any]:
     """Convierte ranking automático a JSON compacto."""
     best = best_fit.get("best")
     top_candidates = [candidate_to_response(candidate) for candidate in best_fit.get("top_candidates", [])]
@@ -366,7 +387,7 @@ def best_fit_to_response(best_fit: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def candidate_to_response(candidate: Dict[str, Any] | None) -> Dict[str, Any] | None:
+def candidate_to_response(candidate: dict[str, Any] | None) -> dict[str, Any] | None:
     """Serializa un candidato evitando arrays numpy."""
     if candidate is None:
         return None
@@ -397,6 +418,9 @@ def candidate_to_response(candidate: Dict[str, Any] | None) -> Dict[str, Any] | 
         "articular_face_indices": np.asarray(candidate.get("articular_face_indices", []), dtype=int).tolist(),
         "reasons": candidate.get("reasons", []),
     }
+    articular_points = candidate.get("articular_points")
+    if articular_points is not None:
+        payload["articular_points"] = np.asarray(articular_points, dtype=float).tolist()
     if sphere is not None:
         morphology = candidate.get("morphology", {})
         payload.update({
@@ -415,7 +439,7 @@ def candidate_to_response(candidate: Dict[str, Any] | None) -> Dict[str, Any] | 
     return payload
 
 
-def best_fit_traces(best_fit: Dict[str, Any]) -> list:
+def best_fit_traces(best_fit: dict[str, Any]) -> list:
     """Crea trazas Plotly para el mejor candidato automático."""
     best = best_fit.get("best")
     if not best or best.get("sphere") is None:
@@ -515,7 +539,7 @@ def make_selection_figure(surface_points: np.ndarray | None = None) -> go.Figure
 
 def build_selection_html(
     fig: go.Figure,
-    initial_best_fit: Dict[str, Any] | None = None,
+    initial_best_fit: dict[str, Any] | None = None,
     initial_filename: str | None = None,
     initial_points: int = 0,
 ) -> str:
@@ -731,7 +755,7 @@ def build_selection_html(
 </html>"""
 
 
-def result_to_response(result: Dict[str, Any]) -> Dict[str, Any]:
+def result_to_response(result: dict[str, Any]) -> dict[str, Any]:
     """Convierte resultado Python a respuesta JSON para el navegador."""
     seed = result["seed"]
     sphere = result["sphere"]
@@ -740,8 +764,8 @@ def result_to_response(result: Dict[str, Any]) -> Dict[str, Any]:
     morphology = AuditTrail.compute_morphological_metrics(
         sphere,
         axis,
-        medial_direction=np.array([1.0, 0.0, 0.0]),
-        posterior_direction=np.array([0.0, 1.0, 0.0]),
+        medial_direction=DEFAULT_MEDIAL_DIRECTION,
+        posterior_direction=DEFAULT_POSTERIOR_DIRECTION,
     )
     validation_data = next(
         (
@@ -829,21 +853,21 @@ def result_to_response(result: Dict[str, Any]) -> Dict[str, Any]:
 def surface_to_response(
     filename: str,
     surface_points: np.ndarray,
-    best_fit: Dict[str, Any] | None = None,
-) -> Dict[str, Any]:
+    best_fit: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Convierte una superficie cargada en respuesta JSON para Plotly."""
     traces = [surface_points_trace(surface_points, name=f"Superficie STL: {filename}")]
     if best_fit is not None:
         traces.extend(best_fit_traces(best_fit))
     return {
         "filename": filename,
-        "points": int(len(surface_points)),
+        "points": len(surface_points),
         "best_fit": best_fit_to_response(best_fit) if best_fit is not None else None,
         "traces": json.loads(json.dumps(traces, cls=PlotlyJSONEncoder)),
     }
 
 
-def load_surface_from_upload(filename: str, data: bytes, samples: int) -> Tuple[CleanedMesh, np.ndarray, np.ndarray]:
+def load_surface_from_upload(filename: str, data: bytes, samples: int) -> tuple[CleanedMesh, np.ndarray, np.ndarray]:
     """Carga un STL recibido desde el navegador."""
     suffix = Path(filename).suffix or ".stl"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
@@ -852,9 +876,13 @@ def load_surface_from_upload(filename: str, data: bytes, samples: int) -> Tuple[
         return load_cleaned_surface_from_stl(tmp.name, samples)
 
 
-def run_selection_server(args: argparse.Namespace) -> None:
-    """Sirve una pagina local para seleccionar semilla con clic."""
-    state: Dict[str, Any] = {
+def create_selection_server(args: argparse.Namespace) -> ThreadingHTTPServer:
+    """Crea el servidor HTTP local de selección de semilla (sin bloquear).
+
+    Devuelve un servidor listo para arrancar con ``serve_forever()`` (o en un
+    hilo, para tests). El estado de la sesión queda accesible en ``server.state``.
+    """
+    state: dict[str, Any] = {
         "surface_points": None,
         "surface_normals": None,
         "cleaned_mesh": None,
@@ -915,7 +943,7 @@ def run_selection_server(args: argparse.Namespace) -> None:
                 return
             self.send_error(404)
 
-        def _send_json(self, payload: Dict[str, Any], status_code: int = 200) -> None:
+        def _send_json(self, payload: dict[str, Any], status_code: int = 200) -> None:
             response = json.dumps(payload).encode("utf-8")
             self.send_response(status_code)
             self.send_header("Content-Type", "application/json")
@@ -976,6 +1004,13 @@ def run_selection_server(args: argparse.Namespace) -> None:
                 self._send_json({"error": str(exc)}, status_code=400)
 
     server = ThreadingHTTPServer((args.host, args.port), SelectionHandler)
+    server.state = state
+    return server
+
+
+def run_selection_server(args: argparse.Namespace) -> None:
+    """Sirve una pagina local para seleccionar semilla con clic."""
+    server = create_selection_server(args)
     host, port = server.server_address
     url = f"http://{host}:{port}/"
     print(f"App local de seleccion STL: {url}")
@@ -1004,7 +1039,7 @@ def run_deterministic_demo(args: argparse.Namespace) -> None:
     viz.plot_points(surface_points, name="Superficie discretizada", color="steelblue", size=2)
     viz.plot_selected_seed(seed)
     viz.plot_sphere(sphere["center"], sphere["radius"], name=f"Esfera ajustada RMSE={sphere['error']:.3f}mm")
-    viz.plot_axis(axis["origin"], axis["direction"], axis["length"], name="Eje longitudinal PCA")
+    viz.plot_axis(axis["origin"], axis["direction"], axis["length"], name="Eje diafisario")
 
     print("\nResultado de la semilla seleccionada")
     print(f"  Semilla: {seed.tolist()}")
@@ -1025,8 +1060,8 @@ def run_deterministic_demo(args: argparse.Namespace) -> None:
     morphology = AuditTrail.compute_morphological_metrics(
         sphere,
         axis,
-        medial_direction=np.array([1.0, 0.0, 0.0]),
-        posterior_direction=np.array([0.0, 1.0, 0.0]),
+        medial_direction=DEFAULT_MEDIAL_DIRECTION,
+        posterior_direction=DEFAULT_POSTERIOR_DIRECTION,
     )
     print(f"  Offset medial: {morphology['medial_offset']:.4f} mm")
     print(f"  Offset posterior: {morphology['posterior_offset']:.4f} mm")

@@ -6,12 +6,13 @@ el método show_interactive() que abre en el navegador predeterminado.
 
 import sys
 from pathlib import Path
+
 import numpy as np
 
 # Añadir directorio src al path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.visualization.visualizer import Visualizer3D, InteractiveVisualizer
+from src.visualization.visualizer import InteractiveVisualizer, Visualizer3D
 
 
 def demo_single_visualization():

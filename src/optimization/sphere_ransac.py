@@ -1,12 +1,19 @@
 """RANSAC y refinamiento robusto de esfera sobre superficie triangular."""
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from ..audit.trail import AuditTrail
-from ..axis.longitudinal import AxisApproximator
+from ..axis.longitudinal import AxisApproximator, axis_end_regions
+from ..config import (
+    DEFAULT_DISTANCE_TOLERANCE,
+    DEFAULT_MEDIAL_DIRECTION,
+    DEFAULT_POSTERIOR_DIRECTION,
+    RADIUS_RANGE,
+)
 from ..geometry.sphere import SphereGeometry
 from ..mesh.cleaner import CleanedMesh, MeshCleaner
 from ..validation.sphere import SphereValidator, SurfaceSupportValidationConfig
@@ -17,9 +24,9 @@ class SphereRansacConfig:
     """Parámetros de búsqueda RANSAC esférica."""
 
     n_iterations: int = 1000
-    distance_tolerance: float = 1.5
+    distance_tolerance: float = DEFAULT_DISTANCE_TOLERANCE
     normal_angle_max: float = 25.0
-    radius_range: Tuple[float, float] = (17.0, 40.0)
+    radius_range: tuple[float, float] = RADIUS_RANGE
     random_seed: int = 42
     min_inlier_faces: int = 20
     min_inlier_area_ratio: float = 0.005
@@ -35,50 +42,62 @@ class SphereRansacConfig:
     core_distance_tolerance: float = 1.1
     articular_side_min: float = 0.0
     articular_side_weight: float = 3.0
+    # Prior académico por ajuste local de esfera (curvatura implícita).
+    use_curvature_prior: bool = True
+    prior_radius: float = 20.0
+    prior_min_neighbors: int = 12
+    prior_radius_range: tuple[float, float] = RADIUS_RANGE
+    prior_max_rmse: float = 2.0
+    prior_min_faces: int = 8
 
 
 class SphereRansacFitter:
     """Detecta la superficie articular y ajusta una esfera robusta."""
 
-    def __init__(self, config: Optional[SphereRansacConfig] = None):
+    def __init__(self, config: SphereRansacConfig | None = None):
         self.config = config or SphereRansacConfig()
 
     def fit(
         self,
         mesh: CleanedMesh,
-        axis: Optional[Dict[str, Any]] = None,
-        audit_trail: Optional[AuditTrail] = None,
-    ) -> Dict[str, Any]:
+        axis: dict[str, Any] | None = None,
+        audit_trail: AuditTrail | None = None,
+    ) -> dict[str, Any]:
         """Ejecuta RANSAC, segmentación conectada y refinamiento geométrico."""
         axis = axis or AxisApproximator.compute_longitudinal_axis(mesh.face_centroids)
-        candidate_regions = self._candidate_end_regions(mesh, axis)
+        prior = self._compute_curvature_prior(mesh)
+        candidate_regions = self._candidate_end_regions(mesh, axis, prior=prior)
         if not candidate_regions:
             raise ValueError("No hay suficientes caras proximales candidatas para RANSAC")
 
         if audit_trail:
             audit_trail.log_step("sphere_ransac_start", {
                 "candidate_regions": [
-                    {"head_side": region["head_side"], "candidate_faces": int(len(region["faces"]))}
+                    {"head_side": region["head_side"], "candidate_faces": len(region["faces"])}
                     for region in candidate_regions
                 ],
                 "n_iterations": int(self.config.n_iterations),
                 "distance_tolerance": float(self.config.distance_tolerance),
                 "normal_angle_max": float(self.config.normal_angle_max),
+                "use_curvature_prior": bool(self.config.use_curvature_prior),
+                "curvature_prior_faces": int(np.count_nonzero(prior)) if prior is not None else 0,
             })
 
         rng = np.random.default_rng(self.config.random_seed)
         region_results = []
         attempts = max(1, int(self.config.n_iterations))
         for region in candidate_regions:
-            best = self._ransac_region(mesh, axis, region["faces"], rng, attempts)
+            best = self._ransac_region(mesh, axis, region["faces"], rng, attempts, prior=prior)
             if best is None:
                 continue
-            refined = self._segment_and_refine(mesh, best["center"], best["radius"], best["articular_face_indices"], axis)
+            refined = self._segment_and_refine(
+                mesh, best["center"], best["radius"], best["articular_face_indices"], axis, prior=prior
+            )
             morphology = self._morphology(axis, refined)
             score_parts = self._score(mesh, refined, morphology)
             region_results.append({
                 "head_side": region["head_side"],
-                "candidate_face_count": int(len(region["faces"])),
+                "candidate_face_count": len(region["faces"]),
                 "raw_score": float(best["raw_score"]),
                 "local_score": float(best["local_score"]),
                 "initial_morphology_penalty": float(best["morphology_penalty"]),
@@ -101,7 +120,7 @@ class SphereRansacFitter:
             "axis": axis,
             "head_side": best_region["head_side"],
             "candidate_face_count": int(best_region["candidate_face_count"]),
-            "candidate_region_count": int(len(region_results)),
+            "candidate_region_count": len(region_results),
             "valid_region_count": int(sum(1 for entry in region_results if entry["score_parts"]["valid"])),
             "candidate_region_summaries": [
                 self._region_summary(entry)
@@ -121,69 +140,92 @@ class SphereRansacFitter:
         return result
 
     @staticmethod
-    def sphere_from_four_points(points: np.ndarray) -> Optional[Tuple[np.ndarray, float]]:
+    def sphere_from_four_points(points: np.ndarray) -> tuple[np.ndarray, float] | None:
         """Calcula la esfera que pasa por cuatro puntos no coplanares."""
         return SphereGeometry.from_four_points(points)
 
-    def _candidate_end_regions(self, mesh: CleanedMesh, axis: Dict[str, Any]) -> list:
-        """Selecciona ambos extremos del húmero para no confundir cabeza y codo."""
-        origin = np.asarray(axis["origin"], dtype=float)
-        distal = np.asarray(axis["distal_point"], dtype=float)
-        direction = distal - origin
-        norm = np.linalg.norm(direction)
-        if norm <= 1e-12:
-            direction = np.asarray(axis["direction"], dtype=float)
-            norm = np.linalg.norm(direction)
-        direction = direction / norm
+    def _compute_curvature_prior(self, mesh: CleanedMesh) -> np.ndarray | None:
+        """Máscara booleana por cara: ¿el vecindario local se ajusta a una esfera?
 
-        centroids = mesh.face_centroids
-        projections = (centroids - origin) @ direction
-        radial = self._axis_radial_distance(centroids, origin, direction)
-        length = float(projections.max() - projections.min())
-        max_depth = min(90.0, max(35.0, self.config.proximal_fraction * float(axis["length"])))
-        end_depth = min(max_depth, max(20.0, 0.25 * length))
-        low_limit = float(projections.min())
-        high_limit = float(projections.max())
-        low_spread = self._spread(radial[projections <= low_limit + end_depth])
-        high_spread = self._spread(radial[projections >= high_limit - end_depth])
+        Es el prior académico: en lugar de operadores discretos de curvatura
+        (sensibles al ruido de mallas decimadas), se ajusta una esfera al
+        vecindario de cada cara (``algebraic_initial_fit``, rápido) y se marca
+        la cara si el radio queda en rango fisiológico y el RMSE es bajo. Una
+        región local esférica (cabeza humeral) queda resaltada frente a la
+        diáfisis cilíndrica. Se usa para filtrar/ponderar el RANSAC.
+        """
+        if not self.config.use_curvature_prior:
+            return None
+        centroids = np.asarray(mesh.face_centroids, dtype=float)
+        n = len(centroids)
+        if n == 0:
+            return None
+        tree = cKDTree(centroids)
+        prior = np.zeros(n, dtype=bool)
+        radius_min, radius_max = self.config.prior_radius_range
+        for i, point in enumerate(centroids):
+            neighbors = tree.query_ball_point(point, float(self.config.prior_radius))
+            neighbors = [j for j in neighbors if j != i]
+            if len(neighbors) < max(4, int(self.config.prior_min_neighbors)):
+                continue
+            try:
+                center, radius = SphereGeometry.algebraic_initial_fit(centroids[neighbors])
+            except (ValueError, np.linalg.LinAlgError):
+                continue
+            if not (radius_min <= radius <= radius_max):
+                continue
+            residuals = SphereGeometry.radial_residuals(centroids[neighbors], center, radius)
+            if float(np.sqrt(np.mean(residuals ** 2))) <= self.config.prior_max_rmse:
+                prior[i] = True
+        return prior
+
+    def _candidate_end_regions(
+        self,
+        mesh: CleanedMesh,
+        axis: dict[str, Any],
+        prior: np.ndarray | None = None,
+    ) -> list:
+        """Selecciona ambos extremos del húmero para no confundir cabeza y codo."""
+        info = axis_end_regions(mesh.face_centroids, axis, self.config.proximal_fraction)
+        low_limit = info["low_limit"]
+        high_limit = info["high_limit"]
+        max_depth = info["max_depth"]
+        projections = info["projections"]
 
         regions = [
             {
                 "head_side": "low_projection",
                 "faces": np.where(projections <= low_limit + max_depth)[0],
-                "spread": low_spread,
             },
             {
                 "head_side": "high_projection",
                 "faces": np.where(projections >= high_limit - max_depth)[0],
-                "spread": high_spread,
             },
         ]
+        if prior is not None:
+            for region in regions:
+                faces = region["faces"]
+                prior_faces = faces[prior[faces]]
+                if len(prior_faces) >= max(4, self.config.prior_min_faces):
+                    region["faces"] = prior_faces
         filtered = [region for region in regions if len(region["faces"]) >= 4]
         if len(filtered) == 2 and np.array_equal(filtered[0]["faces"], filtered[1]["faces"]):
             return [filtered[0]]
         return filtered
 
-    def _proximal_candidate_faces(self, mesh: CleanedMesh, axis: Dict[str, Any]) -> tuple:
-        """Compatibilidad: retorna el extremo más ancho, usado solo por código legado."""
-        regions = self._candidate_end_regions(mesh, axis)
-        if not regions:
-            return np.asarray([], dtype=int), "none"
-        best = max(regions, key=lambda region: region.get("spread", 0.0))
-        return best["faces"], best["head_side"]
-
     def _ransac_region(
         self,
         mesh: CleanedMesh,
-        axis: Dict[str, Any],
+        axis: dict[str, Any],
         candidate_faces: np.ndarray,
         rng: np.random.Generator,
         attempts: int,
-    ) -> Optional[Dict[str, Any]]:
+        prior: np.ndarray | None = None,
+    ) -> dict[str, Any] | None:
         """Busca la mejor esfera inicial dentro de un extremo candidato."""
         best = None
         for _ in range(attempts):
-            sample = self._sample_four_faces(mesh, candidate_faces, rng)
+            sample = self._sample_four_faces(mesh, candidate_faces, rng, prior=prior)
             if sample is None:
                 continue
             sphere = self.sphere_from_four_points(mesh.face_centroids[sample])
@@ -209,8 +251,13 @@ class SphereRansacFitter:
         mesh: CleanedMesh,
         candidate_faces: np.ndarray,
         rng: np.random.Generator,
-    ) -> Optional[np.ndarray]:
+        prior: np.ndarray | None = None,
+    ) -> np.ndarray | None:
         """Muestrea cuatro caras separadas para evitar parches diminutos."""
+        if prior is not None:
+            prior_faces = candidate_faces[prior[candidate_faces]]
+            if len(prior_faces) >= max(8, self.config.prior_min_faces):
+                candidate_faces = prior_faces
         if len(candidate_faces) < 4:
             return None
         areas = mesh.face_areas[candidate_faces].astype(float)
@@ -242,13 +289,13 @@ class SphereRansacFitter:
         center: np.ndarray,
         radius: float,
         face_indices: np.ndarray,
-        axis: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        axis: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Evalúa residuo radial y concordancia normal para caras candidatas."""
         points = mesh.face_centroids[face_indices]
         normals = mesh.face_normals[face_indices]
         residuals = np.abs(SphereGeometry.radial_residuals(points, center, radius))
-        radial_unit, valid = SphereGeometry.radial_unit_vectors(points, center)
+        _, valid = SphereGeometry.radial_unit_vectors(points, center)
         normal_alignment = SphereGeometry.normal_alignment(points, normals, center)
         side_alignment = self._articular_side_alignment(points, center, axis)
         threshold = np.cos(np.deg2rad(self.config.normal_angle_max))
@@ -271,15 +318,16 @@ class SphereRansacFitter:
         center: np.ndarray,
         radius: float,
         initial_faces: np.ndarray,
-        axis: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        axis: dict[str, Any] | None = None,
+        prior: np.ndarray | None = None,
+    ) -> dict[str, Any]:
         """Alterna expansión conectada y refit robusto hasta estabilizar."""
         current_faces = np.asarray(initial_faces, dtype=int)
         converged = False
         iterations = 0
         for iteration in range(1, self.config.refinement_iterations + 1):
             iterations = iteration
-            expanded = self._expand_region(mesh, center, radius, current_faces, axis)
+            expanded = self._expand_region(mesh, center, radius, current_faces, axis, prior=prior)
             refined_center, refined_radius, rmse, mad = self._robust_refit(mesh, expanded, center, radius)
             changed = set(expanded.tolist()) != set(current_faces.tolist())
             moved = np.linalg.norm(refined_center - center) + abs(refined_radius - radius)
@@ -306,7 +354,7 @@ class SphereRansacFitter:
         residuals = np.abs(SphereGeometry.radial_residuals(mesh.face_centroids[current_faces], center, radius))
         radial_p95 = float(np.percentile(residuals, 95)) if len(residuals) else float("inf")
         inlier_area = float(mesh.face_areas[current_faces].sum())
-        labels, sizes = MeshCleaner.connected_components(self._restricted_adjacency(mesh.adjacency, current_faces))
+        _, sizes = MeshCleaner.connected_components(self._restricted_adjacency(mesh.adjacency, current_faces))
         dominant_ratio = float(sizes.max() / max(1, sizes.sum())) if len(sizes) else 0.0
         normal_score = self._normal_score(mesh, center, current_faces)
         side_score = self._articular_side_score(mesh.face_centroids[current_faces], center, axis)
@@ -324,9 +372,9 @@ class SphereRansacFitter:
             "normal_score": float(normal_score),
             "articular_side_score": float(side_score),
             "dominant_component_ratio": dominant_ratio,
-            "connected_component_count": int(len(sizes)),
+            "connected_component_count": len(sizes),
             "articular_face_indices": np.asarray(current_faces, dtype=int),
-            "inlier_face_count": int(len(current_faces)),
+            "inlier_face_count": len(current_faces),
             "iterations": int(iterations),
             "converged": bool(converged),
         }
@@ -339,7 +387,7 @@ class SphereRansacFitter:
         radius: float,
         rmse: float,
         mad: float,
-        axis: Optional[Dict[str, Any]] = None,
+        axis: dict[str, Any] | None = None,
     ) -> tuple:
         """Conserva el núcleo conectado con residuo bajo tras el refit."""
         if len(face_indices) < self.config.min_inlier_faces:
@@ -370,7 +418,8 @@ class SphereRansacFitter:
         center: np.ndarray,
         radius: float,
         seed_faces: np.ndarray,
-        axis: Optional[Dict[str, Any]] = None,
+        axis: dict[str, Any] | None = None,
+        prior: np.ndarray | None = None,
     ) -> np.ndarray:
         """Expande una región compatible hacia caras vecinas."""
         selected = set(int(face) for face in seed_faces)
@@ -394,9 +443,12 @@ class SphereRansacFitter:
                     center,
                     axis,
                 )[0] >= self.config.articular_side_min
+                prior_ok = True
+                if prior is not None:
+                    prior_ok = bool(prior[neighbor])
                 normal_ok = abs(float(np.dot(mesh.face_normals[neighbor], radial_unit))) >= normal_threshold
                 smooth_ok = abs(float(np.dot(mesh.face_normals[neighbor], mesh.face_normals[face]))) >= neighbor_threshold
-                if residual <= self.config.distance_tolerance and side_ok and normal_ok and smooth_ok:
+                if residual <= self.config.distance_tolerance and side_ok and prior_ok and normal_ok and smooth_ok:
                     selected.add(int(neighbor))
                     queue.append(int(neighbor))
         return np.asarray(sorted(selected), dtype=int)
@@ -425,9 +477,9 @@ class SphereRansacFitter:
         center: np.ndarray,
         radius: float,
         face_indices: np.ndarray,
-        evaluated: Dict[str, Any],
-        axis: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        evaluated: dict[str, Any],
+        axis: dict[str, Any],
+    ) -> dict[str, Any]:
         """Resumen barato usado durante RANSAC para escoger candidato inicial."""
         residuals = np.abs(SphereGeometry.radial_residuals(mesh.face_centroids[face_indices], center, radius))
         mad = float(np.median(np.abs(residuals - np.median(residuals))))
@@ -449,15 +501,15 @@ class SphereRansacFitter:
             "local_score": float(local_score),
             "morphology_penalty": float(morphology_penalty),
             "reference_miss_count": int(reference_miss_count),
-            "compatible_face_count": int(len(evaluated["compatible_faces"])),
+            "compatible_face_count": len(evaluated["compatible_faces"]),
         }
 
     def _score(
         self,
         mesh: CleanedMesh,
-        result: Dict[str, Any],
-        morphology: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        result: dict[str, Any],
+        morphology: dict[str, Any],
+    ) -> dict[str, Any]:
         """Calcula score final y validación dura."""
         mad_norm = float(result["mad"]) / max(self.config.distance_tolerance, 1e-6)
         area_ratio = float(result["inlier_area_ratio"])
@@ -517,7 +569,7 @@ class SphereRansacFitter:
             "reasons": support_validation["reasons"],
         }
 
-    def _morphology_penalty(self, morphology: Dict[str, Any]) -> Tuple[float, int]:
+    def _morphology_penalty(self, morphology: dict[str, Any]) -> tuple[float, int]:
         """Penaliza candidatos con ROC/MO/PO lejos de la morfología humeral esperada."""
         z_scores = morphology.get("z_scores", {})
         finite_z = [
@@ -536,7 +588,7 @@ class SphereRansacFitter:
         return z_penalty, int(reference_miss_count)
 
     @staticmethod
-    def _region_summary(entry: Dict[str, Any]) -> Dict[str, Any]:
+    def _region_summary(entry: dict[str, Any]) -> dict[str, Any]:
         """Resumen JSON-friendly de un extremo evaluado por RANSAC."""
         refined = entry["refined"]
         morphology = entry["morphology"]
@@ -568,14 +620,14 @@ class SphereRansacFitter:
         }
 
     @staticmethod
-    def _morphology(axis: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    def _morphology(axis: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
         """Calcula métricas morfológicas y z-scores de referencia."""
         sphere = {"center": result["center"], "radius": result["radius"], "error": result["rmse"]}
         summary = SphereValidator.morphology_summary(
             sphere,
             axis,
-            medial_direction=np.array([1.0, 0.0, 0.0]),
-            posterior_direction=np.array([0.0, 1.0, 0.0]),
+            medial_direction=DEFAULT_MEDIAL_DIRECTION,
+            posterior_direction=DEFAULT_POSTERIOR_DIRECTION,
         )
         return {
             "metrics": summary["morphology"],
@@ -616,18 +668,6 @@ class SphereRansacFitter:
         return restricted
 
     @staticmethod
-    def _axis_radial_distance(points: np.ndarray, origin: np.ndarray, direction: np.ndarray) -> np.ndarray:
-        vecs = points - origin
-        axial = np.outer(vecs @ direction, direction)
-        return np.linalg.norm(vecs - axial, axis=1)
-
-    @staticmethod
-    def _spread(values: np.ndarray) -> float:
-        if len(values) == 0:
-            return 0.0
-        return float(np.percentile(values, 90))
-
-    @staticmethod
     def _angular_coverage(points: np.ndarray, center: np.ndarray) -> float:
         """Estimación acotada de cobertura angular de un conjunto sobre la esfera."""
         return SphereGeometry.angular_coverage(points, center)
@@ -645,7 +685,7 @@ class SphereRansacFitter:
     def _articular_side_alignment(
         points: np.ndarray,
         center: np.ndarray,
-        axis: Optional[Dict[str, Any]],
+        axis: dict[str, Any] | None,
     ) -> np.ndarray:
         """Alineación con el hemisferio externo de la cabeza respecto al eje."""
         points = np.asarray(points, dtype=float)
@@ -676,7 +716,7 @@ class SphereRansacFitter:
     def _articular_side_score(
         points: np.ndarray,
         center: np.ndarray,
-        axis: Optional[Dict[str, Any]],
+        axis: dict[str, Any] | None,
     ) -> float:
         """Promedio acotado de cuánto soporte cae en el hemisferio articular."""
         alignment = SphereRansacFitter._articular_side_alignment(points, center, axis)
@@ -693,7 +733,7 @@ class SphereRansacFitter:
         return float(np.mean(np.clip(alignment, 0.0, 1.0)))
 
     @staticmethod
-    def _json_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    def _json_result(result: dict[str, Any]) -> dict[str, Any]:
         """Convierte resultado a tipos serializables para auditoría."""
         payload = {}
         for key, value in result.items():

@@ -4,13 +4,13 @@ import struct
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from examples.demo_interactive_web import (
     best_fit_to_response,
     compute_best_fit_search,
     compute_from_seed,
     result_to_response,
-    synthetic_humerus_points,
 )
 from src.approximation.sphere import SphericalApproximator
 from src.audit.trail import AuditTrail
@@ -26,50 +26,7 @@ from src.optimization.sphere_ransac import SphereRansacConfig, SphereRansacFitte
 from src.validation.sphere import ApproximationValidationConfig, SphereValidator
 from src.validation.viability import SeedValidator
 from src.visualization.interactive_web import InteractiveWeb3D
-
-
-def synthetic_humerus_mesh():
-    """Crea una malla sintética con casquete humeral y tallo cilíndrico."""
-    center = np.array([12.0, 3.0, 80.0])
-    radius = 22.0
-    theta = np.linspace(0.05, np.pi / 2.0, 18)
-    phi = np.linspace(0.0, 2.0 * np.pi, 36, endpoint=False)
-    vertices = []
-    for t in theta:
-        for p in phi:
-            vertices.append(center + radius * np.array([
-                np.sin(t) * np.cos(p),
-                np.sin(t) * np.sin(p),
-                np.cos(t),
-            ]))
-
-    faces = []
-    n_phi = len(phi)
-    for i in range(len(theta) - 1):
-        for j in range(n_phi):
-            a = i * n_phi + j
-            b = i * n_phi + (j + 1) % n_phi
-            c = (i + 1) * n_phi + j
-            d = (i + 1) * n_phi + (j + 1) % n_phi
-            faces.append([a, c, b])
-            faces.append([b, c, d])
-
-    offset = len(vertices)
-    z = np.linspace(-180.0, 68.0, 60)
-    shaft_phi = np.linspace(0.0, 2.0 * np.pi, 24, endpoint=False)
-    for zz in z:
-        for p in shaft_phi:
-            vertices.append([8.0 * np.cos(p), 8.0 * np.sin(p), zz])
-    for i in range(len(z) - 1):
-        for j in range(len(shaft_phi)):
-            a = offset + i * len(shaft_phi) + j
-            b = offset + i * len(shaft_phi) + (j + 1) % len(shaft_phi)
-            c = offset + (i + 1) * len(shaft_phi) + j
-            d = offset + (i + 1) * len(shaft_phi) + (j + 1) % len(shaft_phi)
-            faces.append([a, b, c])
-            faces.append([b, d, c])
-
-    return np.asarray(vertices, dtype=float), np.asarray(faces, dtype=int)
+from tests._synthetic import synthetic_humerus_mesh, synthetic_humerus_points
 
 
 def test_deterministic_seed_estimates_known_sphere():
@@ -195,7 +152,7 @@ def test_best_fit_search_recovers_synthetic_humeral_head():
 
     best = result["best"]
 
-    assert result["head_side"] == "high_projection"
+    assert result["head_side"] == "low_projection"
     assert result["candidate_count"] == 20
     assert result["valid_candidate_count"] == 20
     assert best["valid"]
@@ -306,6 +263,54 @@ def test_sphere_ransac_recovers_synthetic_humeral_head_mesh():
     assert result["valid"]
 
 
+def test_curvature_prior_marks_head_cap_over_shaft():
+    vertices, faces = synthetic_humerus_mesh()
+    cleaned = MeshCleaner(keep_largest_component=False).clean(vertices, faces)
+    fitter = SphereRansacFitter(SphereRansacConfig(use_curvature_prior=True))
+
+    prior = fitter._compute_curvature_prior(cleaned)
+
+    assert prior is not None
+    assert prior.shape == (len(cleaned.faces),)
+    # La cabeza (z alto, cerca del centro [12,3,80]) debe concentrar el prior.
+    centroids = cleaned.face_centroids
+    head_mask = centroids[:, 2] > 70.0
+    shaft_mask = centroids[:, 2] < 60.0
+    assert np.count_nonzero(prior) > 0
+    assert prior[head_mask].mean() > prior[shaft_mask].mean()
+
+
+def test_curvature_prior_can_be_disabled():
+    vertices, faces = synthetic_humerus_mesh()
+    cleaned = MeshCleaner(keep_largest_component=False).clean(vertices, faces)
+    fitter = SphereRansacFitter(SphereRansacConfig(use_curvature_prior=False))
+
+    assert fitter._compute_curvature_prior(cleaned) is None
+
+    result = fitter.fit(cleaned)
+    assert result["valid"]
+    assert abs(result["radius"] - 22.0) < 0.3
+
+
+def test_curvature_prior_disabled_improves_rmse_or_keeps_recovery():
+    vertices, faces = synthetic_humerus_mesh()
+    cleaned = MeshCleaner(keep_largest_component=False).clean(vertices, faces)
+    axis = AxisApproximator.compute_longitudinal_axis(cleaned.face_centroids)
+
+    with_prior = SphereRansacFitter(
+        SphereRansacConfig(n_iterations=300, random_seed=3, use_curvature_prior=True)
+    ).fit(cleaned, axis=axis)
+    without_prior = SphereRansacFitter(
+        SphereRansacConfig(n_iterations=300, random_seed=3, use_curvature_prior=False)
+    ).fit(cleaned, axis=axis)
+
+    # Ambos recuperan la esfera conocida; el prior no debe degradar el ajuste.
+    for result in (with_prior, without_prior):
+        np.testing.assert_allclose(result["center"], [12.0, 3.0, 80.0], atol=0.2)
+        assert abs(result["radius"] - 22.0) < 0.25
+    assert with_prior["rmse"] <= without_prior["rmse"] + 1e-3
+
+
 def test_ransac_score_penalizes_distal_local_sphere_with_bad_morphology():
     vertices, faces = synthetic_humerus_mesh()
     cleaned = MeshCleaner(keep_largest_component=False).clean(vertices, faces)
@@ -356,7 +361,7 @@ def test_ransac_compares_both_ends_and_rejects_elbow_sphere_on_sample_stl():
     ).fit(cleaned, axis=axis)
 
     assert result["candidate_region_count"] == 2
-    assert result["head_side"] == "low_projection"
+    assert result["head_side"] == "high_projection"
     assert 17.0 <= result["morphology"]["roc"] <= 30.0
     assert 1.0 <= result["morphology"]["medial_offset"] <= 16.0
     assert 0.0 <= result["morphology"]["posterior_offset"] <= 10.0
@@ -534,3 +539,53 @@ def test_curvature_spherical_region_filter():
     )
 
     assert CurvatureCalculator.is_local_sphere(curvature, radius_estimate=25.0, tolerance=0.01)
+
+
+def test_axis_pca_and_least_squares_methods():
+    points, _, _ = synthetic_humerus_points()
+    for method in ("pca", "least_squares_line"):
+        axis = AxisApproximator.compute_longitudinal_axis(points, method=method)
+        assert axis["method"] == method
+        assert axis["length"] > 0.0
+        assert abs(np.linalg.norm(axis["direction"]) - 1.0) < 1e-6
+        assert axis["validation"]["overall_valid"]
+
+
+def test_axis_invalid_method_raises():
+    points, _, _ = synthetic_humerus_points()
+    with pytest.raises(ValueError):
+        AxisApproximator.compute_longitudinal_axis(points, method="bogus_method")
+
+
+def test_axis_requires_minimum_points():
+    with pytest.raises(ValueError):
+        AxisApproximator.compute_longitudinal_axis(np.zeros((1, 3)))
+
+
+def test_ransac_raises_without_candidate_regions():
+    vertices = np.array([
+        [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+        [100.0, 100.0, 100.0], [101.0, 100.0, 100.0], [100.0, 101.0, 100.0],
+    ], dtype=float)
+    faces = np.array([[0, 1, 2], [3, 4, 5]])
+    cleaned = MeshCleaner(keep_largest_component=False).clean(vertices, faces)
+    axis = AxisApproximator.compute_longitudinal_axis(cleaned.face_centroids)
+    with pytest.raises(ValueError):
+        SphereRansacFitter(SphereRansacConfig()).fit(cleaned, axis=axis)
+
+
+def test_best_fit_search_without_clean_mesh_fallback():
+    points, normals, _ = synthetic_humerus_points()
+    result = compute_best_fit_search(
+        points,
+        normals,
+        n_seeds=20,
+        top_k=1,
+        initial_radius=22.0,
+        max_error=2.0,
+        cleaned_mesh=None,
+    )
+    response = best_fit_to_response(result)
+    assert response["automatic_method"] == "seed_population"
+    assert response["best"] is not None
+    assert response["best"]["valid"]

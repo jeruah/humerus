@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "humero-sphere"
+version = "0.1.0"
+description = "Aproximación de esfera en cabeza humeral a partir de STL (eje diafisario, RANSAC esférico y validación morfológica)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Academic" }
+dependencies = [
+    "numpy>=1.20",
+    "scipy>=1.7",
+    "scikit-learn>=1.0",
+    "trimesh>=4.0",
+    "matplotlib>=3.3",
+    "plotly>=5.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.12",
+    "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Estilo del proyecto: se ignoran reglas cosméticas preexistentes que no
+# aportan corrección (blind except en demos, dict(), datetime naive, etc.).
+ignore = [
+    "BLE001",  # blind except Exception (usado en demos/handlers web a propósito)
+    "B017",    # pytest.raises(Exception) en demos
+    "C401",    # set(gen) en lugar de set-comp (equivalente)
+    "C408",    # dict() en lugar de literal en plotly/config (estilo plotly)
+    "DTZ005",  # datetime.now() naive (auditoría usa timestamps locales)
+    "PLW1510", # subprocess sin check explícito en run_tests.py
+    "SIM115",  # NamedTemporaryFile sin context manager (tempfile)
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=src --cov-report=term-missing --cov-fail-under=85"
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

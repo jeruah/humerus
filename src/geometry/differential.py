@@ -1,7 +1,8 @@
 """Análisis diferencial de superficies."""
 
+
 import numpy as np
-from typing import Tuple
+
 from .sphere import SphereGeometry
 
 
@@ -20,7 +21,7 @@ class DifferentialAnalyzer:
         point: np.ndarray,
         neighbors: np.ndarray,
         normal: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, float]:
+    ) -> tuple[np.ndarray, np.ndarray, float]:
         """
         Ajusta superficie cuadrática local (WLOP).
         
@@ -100,7 +101,7 @@ class DifferentialAnalyzer:
     @staticmethod
     def compute_principal_curvatures(
         Hessian: np.ndarray
-    ) -> Tuple[float, float, np.ndarray, np.ndarray]:
+    ) -> tuple[float, float, np.ndarray, np.ndarray]:
         """
         Calcula curvaturas principales desde Hessiana.
         
@@ -133,7 +134,7 @@ class DifferentialAnalyzer:
         point: np.ndarray,
         neighbors: np.ndarray,
         initial_radius: float = 30.0
-    ) -> Tuple[np.ndarray, float, float]:
+    ) -> tuple[np.ndarray, float, float]:
         """
         Ajusta esfera localmente a conjunto de puntos.
         
@@ -180,7 +181,7 @@ class DifferentialAnalyzer:
         neighbors: np.ndarray,
         normal: np.ndarray,
         window_size: float = 2.0
-    ) -> Tuple[float, float]:
+    ) -> tuple[float, float]:
         """
         Estima límites de curvatura usando análisis local.
         

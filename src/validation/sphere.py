@@ -1,49 +1,45 @@
 """Reglas compartidas de validación de esferas humerales."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import numpy as np
 
-
-@dataclass
-class MorphologyReference:
-    """Rangos, medias y desviaciones de referencia morfológica."""
-
-    min_roc: float = 17.0
-    max_roc: float = 30.0
-    mean_roc: float = 22.5
-    sd_roc: float = 2.8
-    min_medial_offset: float = 1.0
-    max_medial_offset: float = 14.0
-    mean_medial_offset: float = 6.8
-    sd_medial_offset: float = 2.5
-    min_posterior_offset: float = 0.0
-    max_posterior_offset: float = 10.0
-    mean_posterior_offset: float = 2.0
-    sd_posterior_offset: float = 2.0
+from ..config import (
+    DEFAULT_MAX_ERROR,
+    DEFAULT_MEDIAL_DIRECTION,
+    DEFAULT_MORPHOLOGY_REFERENCE,
+    DEFAULT_POSTERIOR_DIRECTION,
+    RADIUS_RANGE,
+    MorphologyReference,
+)
 
 
 @dataclass
 class ApproximationValidationConfig:
     """Configuración para validación clásica de una esfera ajustada."""
 
-    max_error: float = 2.0
-    min_radius: float = 17.0
-    max_radius: float = 40.0
+    max_error: float = DEFAULT_MAX_ERROR
+    min_radius: float = RADIUS_RANGE[0]
+    max_radius: float = RADIUS_RANGE[1]
     enforce_morphology_reference: bool = False
-    reference: MorphologyReference = field(default_factory=MorphologyReference)
+    reference: MorphologyReference = field(default_factory=lambda: DEFAULT_MORPHOLOGY_REFERENCE)
 
 
 @dataclass
 class SurfaceSupportValidationConfig:
     """Configuración para validar soporte superficial de una esfera RANSAC."""
 
-    min_radius: float = 17.0
-    max_radius: float = 40.0
+    min_radius: float = RADIUS_RANGE[0]
+    max_radius: float = RADIUS_RANGE[1]
     min_inlier_faces: int = 20
     min_inlier_area_ratio: float = 0.005
     min_dominant_component_ratio: float = 0.85
+
+
+def default_anatomical_directions() -> tuple[np.ndarray, np.ndarray]:
+    """Direcciones medial/posterior por defecto (marco global aproximado)."""
+    return DEFAULT_MEDIAL_DIRECTION.copy(), DEFAULT_POSTERIOR_DIRECTION.copy()
 
 
 class SphereValidator:
@@ -51,13 +47,13 @@ class SphereValidator:
 
     @staticmethod
     def validate_approximation(
-        sphere: Dict[str, Any],
-        axis: Optional[Dict[str, Any]] = None,
-        surface_points: Optional[np.ndarray] = None,
-        medial_direction: Optional[np.ndarray] = None,
-        posterior_direction: Optional[np.ndarray] = None,
-        config: Optional[ApproximationValidationConfig] = None,
-    ) -> Dict[str, Any]:
+        sphere: dict[str, Any],
+        axis: dict[str, Any] | None = None,
+        surface_points: np.ndarray | None = None,
+        medial_direction: np.ndarray | None = None,
+        posterior_direction: np.ndarray | None = None,
+        config: ApproximationValidationConfig | None = None,
+    ) -> dict[str, Any]:
         """Valida RMSE, ROC plausible y referencia morfológica opcional."""
         config = config or ApproximationValidationConfig()
         is_valid = True
@@ -118,10 +114,10 @@ class SphereValidator:
 
     @staticmethod
     def validate_surface_support(
-        result: Dict[str, Any],
+        result: dict[str, Any],
         total_area: float,
         config: SurfaceSupportValidationConfig,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Valida criterios duros de una esfera con soporte triangular."""
         valid = True
         reasons = []
@@ -151,12 +147,12 @@ class SphereValidator:
 
     @staticmethod
     def compute_morphological_metrics(
-        sphere: Dict[str, Any],
-        axis: Dict[str, Any],
-        surface_points: Optional[np.ndarray] = None,
-        medial_direction: Optional[np.ndarray] = None,
-        posterior_direction: Optional[np.ndarray] = None,
-    ) -> Dict[str, Any]:
+        sphere: dict[str, Any],
+        axis: dict[str, Any],
+        surface_points: np.ndarray | None = None,
+        medial_direction: np.ndarray | None = None,
+        posterior_direction: np.ndarray | None = None,
+    ) -> dict[str, Any]:
         """Calcula ROC y offsets transversal-medial/posterior."""
         center = np.asarray(sphere.get("center"), dtype=float)
         origin = np.asarray(axis.get("origin"), dtype=float)
@@ -202,13 +198,13 @@ class SphereValidator:
 
     @staticmethod
     def morphology_summary(
-        sphere: Dict[str, Any],
-        axis: Dict[str, Any],
-        surface_points: Optional[np.ndarray] = None,
-        medial_direction: Optional[np.ndarray] = None,
-        posterior_direction: Optional[np.ndarray] = None,
-        reference: Optional[MorphologyReference] = None,
-    ) -> Dict[str, Any]:
+        sphere: dict[str, Any],
+        axis: dict[str, Any],
+        surface_points: np.ndarray | None = None,
+        medial_direction: np.ndarray | None = None,
+        posterior_direction: np.ndarray | None = None,
+        reference: MorphologyReference | None = None,
+    ) -> dict[str, Any]:
         """Calcula métricas, flags, z-scores y razones morfológicas."""
         reference = reference or MorphologyReference()
         morphology = SphereValidator.compute_morphological_metrics(
@@ -276,7 +272,7 @@ class SphereValidator:
         }
 
     @staticmethod
-    def reference_stat(value: float, min_value: float, max_value: float, mean: float, sd: float) -> Dict[str, float]:
+    def reference_stat(value: float, min_value: float, max_value: float, mean: float, sd: float) -> dict[str, float]:
         """Empaqueta valor, rango, media, desviación y z-score."""
         sd = float(sd)
         z_score = (float(value) - float(mean)) / sd if sd > 0 else float("nan")
@@ -290,7 +286,7 @@ class SphereValidator:
         }
 
     @staticmethod
-    def reference_ranges(reference: MorphologyReference) -> Dict[str, list]:
+    def reference_ranges(reference: MorphologyReference) -> dict[str, list]:
         """Rangos de referencia morfológica."""
         return {
             "roc": [float(reference.min_roc), float(reference.max_roc)],
@@ -299,7 +295,7 @@ class SphereValidator:
         }
 
     @staticmethod
-    def reference_statistics(reference: MorphologyReference) -> Dict[str, Dict[str, float]]:
+    def reference_statistics(reference: MorphologyReference) -> dict[str, dict[str, float]]:
         """Media y desviación de referencia morfológica."""
         return {
             "roc": {"mean": float(reference.mean_roc), "sd": float(reference.sd_roc)},
@@ -316,10 +312,10 @@ class SphereValidator:
     @staticmethod
     def transverse_frame(
         longitudinal: np.ndarray,
-        medial_direction: Optional[np.ndarray] = None,
-        posterior_direction: Optional[np.ndarray] = None,
-        surface_points: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        medial_direction: np.ndarray | None = None,
+        posterior_direction: np.ndarray | None = None,
+        surface_points: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Construye dos direcciones ortonormales perpendiculares al eje."""
         medial = SphereValidator.project_perpendicular(medial_direction, longitudinal)
         if medial is None and surface_points is not None:
@@ -351,7 +347,7 @@ class SphereValidator:
         return medial, posterior
 
     @staticmethod
-    def project_perpendicular(vector: Optional[np.ndarray], axis: np.ndarray) -> Optional[np.ndarray]:
+    def project_perpendicular(vector: np.ndarray | None, axis: np.ndarray) -> np.ndarray | None:
         """Proyecta un vector al plano perpendicular del eje y lo normaliza."""
         if vector is None:
             return None

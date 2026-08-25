@@ -1,9 +1,68 @@
 """Aproximación del eje longitudinal del húmero."""
 
+from typing import Any
+
 import numpy as np
-from typing import Optional, Tuple, Dict, Any
-from sklearn.decomposition import PCA
 from scipy.spatial import ConvexHull, QhullError
+from sklearn.decomposition import PCA
+
+
+def axis_end_regions(
+    points: np.ndarray,
+    axis: dict[str, Any],
+    proximal_fraction: float = 0.35,
+    end_depth_ratio: float = 0.25,
+) -> dict[str, Any]:
+    """Divide puntos en extremos proximal/distal según su proyección al eje.
+
+    Es el helper compartido por el RANSAC esférico y el best-fit poblacional
+    para seleccionar los extremos candidatos (cabeza vs. codo). La cabeza se
+    identifica por la mayor dispersión radial (percentil 90) respecto al eje,
+    criterio robusto al ruido de mallas decimadas.
+
+    Returns
+    -------
+    dict con: direction, projections, radial, low_limit, high_limit,
+    max_depth, end_depth, low_spread, high_spread, head_side.
+    """
+    points = np.asarray(points, dtype=float)
+    origin = np.asarray(axis["origin"], dtype=float)
+    distal = np.asarray(axis["distal_point"], dtype=float)
+    direction = distal - origin
+    norm = np.linalg.norm(direction)
+    if norm <= 1e-12:
+        direction = np.asarray(axis["direction"], dtype=float)
+        norm = np.linalg.norm(direction)
+    direction = direction / norm
+
+    projections = (points - origin) @ direction
+    vecs = points - origin
+    axial = np.outer(projections, direction)
+    radial = np.linalg.norm(vecs - axial, axis=1)
+    length = float(projections.max() - projections.min())
+    max_depth = min(90.0, max(35.0, float(proximal_fraction) * float(axis.get("length", length))))
+    end_depth = min(max_depth, max(20.0, float(end_depth_ratio) * length))
+    low_limit = float(projections.min())
+    high_limit = float(projections.max())
+
+    low_mask = projections <= low_limit + end_depth
+    high_mask = projections >= high_limit - end_depth
+    low_spread = float(np.percentile(radial[low_mask], 90)) if np.any(low_mask) else 0.0
+    high_spread = float(np.percentile(radial[high_mask], 90)) if np.any(high_mask) else 0.0
+    head_side = "high_projection" if high_spread >= low_spread else "low_projection"
+
+    return {
+        "direction": direction,
+        "projections": projections,
+        "radial": radial,
+        "low_limit": low_limit,
+        "high_limit": high_limit,
+        "max_depth": max_depth,
+        "end_depth": end_depth,
+        "low_spread": low_spread,
+        "high_spread": high_spread,
+        "head_side": head_side,
+    }
 
 
 class AxisApproximator:
@@ -31,8 +90,8 @@ class AxisApproximator:
         crop_fraction: float = 0.20,
         slice_spike_ratio: float = 2.5,
         ransac_iterations: int = 128,
-        ransac_residual_threshold: Optional[float] = None,
-    ) -> Dict[str, Any]:
+        ransac_residual_threshold: float | None = None,
+    ) -> dict[str, Any]:
         """
         Calcula eje longitudinal del húmero.
         
@@ -69,19 +128,29 @@ class AxisApproximator:
         -------
         Dict[str, any]
             {
-                'origin': np.ndarray (3,),  # Punto de inicio (cabeza)
-                'direction': np.ndarray (3,),  # Dirección unitaria
+                'origin': np.ndarray (3,),      # Punto de inicio (cabeza)
+                'direction': np.ndarray (3,),   # Dirección unitaria (cabeza -> distal)
                 'distal_point': np.ndarray (3,),  # Extremo distal
-                'length': float,  # Longitud del eje (mm)
-                'validation': Dict  # Validaciones
+                'length': float,                # Longitud del eje (mm)
+                'head_position': np.ndarray (3,),  # Posición estimada de la cabeza
+                'method': str,                  # Método usado
+                'validation': Dict,             # Validaciones (validate_axis)
+                # Diagnósticos del ajuste (según método):
+                'axis_fit_strategy': str,       # p. ej. rough_pca_crop_slice_filter_ransac
+                'axis_fit_point_count': int,    # Puntos usados para ajustar el eje
+                'total_point_count': int,       # Puntos de entrada
             }
-        
+
         Notes
         -----
         El eje se parametriza como:
         P(t) = origin + t * direction
-        
+
         donde t ∈ [0, length]
+
+        Nota: el origen se coloca en el extremo de la cabeza usando
+        `find_head_position` (mayor dispersión radial respecto al eje PCA);
+        la dirección apunta desde la cabeza hacia el extremo distal.
         """
         surface_points = np.asarray(surface_points, dtype=float)
         if surface_points.ndim != 2 or surface_points.shape[1] != 3:
@@ -145,8 +214,8 @@ class AxisApproximator:
             "head_position": head_position,
             "method": method,
             "shaft_trim_fraction": float(shaft_trim_fraction) if method == "shaft_pca" else 0.0,
-            "axis_fit_point_count": int(len(shaft_points)),
-            "total_point_count": int(len(surface_points)),
+            "axis_fit_point_count": len(shaft_points),
+            "total_point_count": len(surface_points),
         }
         axis.update(axis_diagnostics)
         axis["validation"] = AxisApproximator.validate_axis(axis, surface_points)
@@ -163,8 +232,8 @@ class AxisApproximator:
         crop_fraction: float = 0.20,
         slice_spike_ratio: float = 2.5,
         ransac_iterations: int = 128,
-        ransac_residual_threshold: Optional[float] = None,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+        ransac_residual_threshold: float | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
         """
         Calcula el eje desde cortes transversales de la diáfisis.
 
@@ -241,7 +310,7 @@ class AxisApproximator:
             direction, centroid, shaft_points = AxisApproximator._compute_axis_shaft_pca(neutral_points)
             return direction, centroid, shaft_points, {
                 "axis_fit_strategy": "fallback_shaft_pca",
-                "density_neutral_point_count": int(len(neutral_points)),
+                "density_neutral_point_count": len(neutral_points),
                 "projected_length": projected_length,
                 "is_complete_humerus": is_complete,
                 "slice_count": int(bin_count),
@@ -301,24 +370,24 @@ class AxisApproximator:
 
         return direction, centroid, retained_points, {
             "axis_fit_strategy": "rough_pca_crop_slice_filter_ransac",
-            "density_neutral_point_count": int(len(neutral_points)),
+            "density_neutral_point_count": len(neutral_points),
             "projected_length": projected_length,
             "complete_length_threshold": float(complete_length_threshold),
             "is_complete_humerus": is_complete,
             "crop_fraction": crop,
             "crop_mode": "head_and_tail" if is_complete else "head_only",
             "crop_projection_range": [float(low_q), float(high_q)],
-            "roi_point_count": int(len(roi_points)),
+            "roi_point_count": len(roi_points),
             "slice_count": int(bin_count),
-            "slice_valid_count": int(len(slice_centroids)),
+            "slice_valid_count": len(slice_centroids),
             "shaft_radius_threshold": float(radius_threshold),
             "slice_area_threshold": float(area_threshold),
             "slice_perimeter_threshold": float(perimeter_threshold),
             "spike_filtered_slice_count": int(np.count_nonzero(candidate)),
             "shaft_segment_start_slice": int(slice_indices[start]),
             "shaft_segment_stop_slice": int(slice_indices[stop - 1]),
-            "shaft_retained_slice_count": int(len(retained_centroids)),
-            "axis_fit_centerline_point_count": int(len(retained_centroids)),
+            "shaft_retained_slice_count": len(retained_centroids),
+            "axis_fit_centerline_point_count": len(retained_centroids),
             "ransac_inlier_count": int(np.count_nonzero(inlier_mask)),
             "ransac_outlier_count": int(len(inlier_mask) - np.count_nonzero(inlier_mask)),
             "ransac_residual_threshold": float(residual_threshold),
@@ -348,7 +417,7 @@ class AxisApproximator:
         return np.column_stack((points @ basis_u, points @ basis_v))
 
     @staticmethod
-    def _cross_section_area_perimeter(points_2d: np.ndarray) -> Tuple[float, float]:
+    def _cross_section_area_perimeter(points_2d: np.ndarray) -> tuple[float, float]:
         """Estima área y perímetro de una sección con casco convexo 2D."""
         points_2d = np.asarray(points_2d, dtype=float)
         if len(points_2d) < 3:
@@ -379,9 +448,9 @@ class AxisApproximator:
     def _ransac_line_fit(
         points: np.ndarray,
         iterations: int = 128,
-        residual_threshold: Optional[float] = None,
+        residual_threshold: float | None = None,
         random_seed: int = 13,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
         """Ajusta una recta 3D con RANSAC y refina con PCA sobre inliers."""
         points = np.asarray(points, dtype=float)
         if len(points) < 2:
@@ -486,7 +555,7 @@ class AxisApproximator:
     def _compute_axis_shaft_pca(
         surface_points: np.ndarray,
         trim_fraction: float = 0.18
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Calcula el eje usando PCA solo en la diáfisis/tallo.
 
@@ -516,7 +585,7 @@ class AxisApproximator:
     @staticmethod
     def _compute_axis_pca(
         surface_points: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Calcula eje usando PCA.
         
@@ -542,7 +611,7 @@ class AxisApproximator:
     @staticmethod
     def _compute_axis_least_squares(
         surface_points: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Calcula eje usando mínimos cuadrados.
         
@@ -568,22 +637,27 @@ class AxisApproximator:
     def find_head_position(
         surface_points: np.ndarray,
         head_radius: float = 30.0,
-        head_region_fraction: float = 0.2
+        head_region_fraction: float = 0.2,
     ) -> np.ndarray:
         """
         Identifica posición de cabeza del húmero.
-        
-        La cabeza corresponde a la región esférica articular.
-        
+
+        La cabeza es el extremo con mayor dispersión radial respecto al eje
+        PCA (el casquete esférico sobresale lateralmente más que la diáfisis
+        o el codo). Se usa el percentil 90 del radio transversal por extremo,
+        igual que el RANSAC de esfera y el best-fit poblacional, en lugar de
+        la distancia media al centroide (que falla cuando la diáfisis es
+        larga o el extremo distal es ancho).
+
         Parameters
         ----------
         surface_points : np.ndarray
             Puntos de superficie
         head_radius : float
-            Radio estimado de cabeza (mm)
+            Radio estimado de cabeza (mm) - conservado por compatibilidad
         head_region_fraction : float
-            Fracción de altura que corresponde a cabeza
-        
+            Fracción de la longitud proyectada que corresponde a cada extremo
+
         Returns
         -------
         np.ndarray
@@ -591,13 +665,14 @@ class AxisApproximator:
         """
         direction, centroid = AxisApproximator._compute_axis_pca(surface_points)
         projections = (surface_points - centroid) @ direction
-        cutoff = np.quantile(projections, 1.0 - head_region_fraction)
-        high_end = surface_points[projections >= cutoff]
-        low_end = surface_points[projections <= np.quantile(projections, head_region_fraction)]
+        axial = np.outer(projections, direction)
+        radial = np.linalg.norm(surface_points - (centroid + axial), axis=1)
 
-        high_score = np.mean(np.linalg.norm(high_end - high_end.mean(axis=0), axis=1))
-        low_score = np.mean(np.linalg.norm(low_end - low_end.mean(axis=0), axis=1))
-        return high_end.mean(axis=0) if high_score >= low_score else low_end.mean(axis=0)
+        high_mask = projections >= np.quantile(projections, 1.0 - head_region_fraction)
+        low_mask = projections <= np.quantile(projections, head_region_fraction)
+        high_spread = float(np.percentile(radial[high_mask], 90)) if np.any(high_mask) else 0.0
+        low_spread = float(np.percentile(radial[low_mask], 90)) if np.any(low_mask) else 0.0
+        return surface_points[high_mask].mean(axis=0) if high_spread >= low_spread else surface_points[low_mask].mean(axis=0)
     
     @staticmethod
     def find_distal_position(
@@ -624,9 +699,9 @@ class AxisApproximator:
     
     @staticmethod
     def validate_axis(
-        axis_dict: Dict,
+        axis_dict: dict,
         surface_points: np.ndarray
-    ) -> Dict[str, bool]:
+    ) -> dict[str, bool]:
         """
         Valida que el eje aproximado es correcto.
         

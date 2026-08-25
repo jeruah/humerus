@@ -1,9 +1,10 @@
-"""Plantilla para optimización y refinamiento iterativo."""
+"""Optimización y refinamiento iterativo de aproximaciones de esfera."""
+
 
 import numpy as np
-from typing import List, Dict, Optional
-from ..audit.trail import AuditTrail, AuditManager
+
 from ..approximation.sphere import SphericalApproximator
+from ..audit.trail import AuditManager
 
 
 class SphereOptimizer:
@@ -17,7 +18,7 @@ class SphereOptimizer:
     4. Generar reporte
     """
     
-    def __init__(self, approximator: Optional[SphericalApproximator] = None):
+    def __init__(self, approximator: SphericalApproximator | None = None):
         """
         Inicializa optimizador.
         
@@ -35,7 +36,7 @@ class SphereOptimizer:
         surface_points: np.ndarray,
         surface_normals: np.ndarray,
         validate_seed_fn=None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Aproxima esferas desde múltiples semillas.
         
@@ -108,7 +109,7 @@ class SphereOptimizer:
         self,
         articulation_region: np.ndarray,
         n_seeds: int = 20,
-        random_seed: Optional[int] = None
+        random_seed: int | None = None
     ) -> np.ndarray:
         """
         Selecciona semillas aleatorias en región articular.
@@ -138,7 +139,7 @@ class SphereOptimizer:
         indices = rng.choice(len(articulation_region), size=n_seeds, replace=replace)
         return articulation_region[indices]
     
-    def get_optimization_summary(self) -> Dict:
+    def get_optimization_summary(self) -> dict:
         """
         Resumen de todas las optimizaciones.
         

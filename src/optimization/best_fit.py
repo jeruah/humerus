@@ -1,12 +1,17 @@
 """Búsqueda heurística de best-fit sphere para cabeza humeral."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
 from ..approximation.sphere import SphericalApproximator
 from ..audit.trail import AuditTrail
-from ..axis.longitudinal import AxisApproximator
+from ..axis.longitudinal import AxisApproximator, axis_end_regions
+from ..config import (
+    DEFAULT_MAX_ERROR,
+    DEFAULT_MEDIAL_DIRECTION,
+    DEFAULT_POSTERIOR_DIRECTION,
+)
 
 
 class HumeralHeadBestFitSearch:
@@ -22,9 +27,9 @@ class HumeralHeadBestFitSearch:
         n_seeds: int = 80,
         top_k: int = 5,
         initial_radius: float = 22.5,
-        max_error: float = 2.0,
+        max_error: float = DEFAULT_MAX_ERROR,
         random_seed: int = 11,
-        surface_tolerance: Optional[float] = None,
+        surface_tolerance: float | None = None,
         proximal_fraction: float = 0.35,
     ):
         self.n_seeds = int(n_seeds)
@@ -40,8 +45,8 @@ class HumeralHeadBestFitSearch:
         self,
         surface_points: np.ndarray,
         surface_normals: np.ndarray,
-        axis: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        axis: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Ejecuta búsqueda automática y retorna ranking de esferas."""
         points = np.asarray(surface_points, dtype=float)
         normals = np.asarray(surface_normals, dtype=float)
@@ -54,7 +59,7 @@ class HumeralHeadBestFitSearch:
         head_region_indices, head_side = self._head_region_indices(points, axis)
         seed_indices = self._select_seed_indices(points, axis, head_region_indices)
 
-        candidates: List[Dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
         for rank_seed, point_index in enumerate(seed_indices):
             seed = points[point_index]
             audit = AuditTrail(f"best_fit_seed_{rank_seed:04d}")
@@ -71,8 +76,8 @@ class HumeralHeadBestFitSearch:
                     max_error=self.max_error,
                     axis=axis,
                     surface_points=points,
-                    medial_direction=np.array([1.0, 0.0, 0.0]),
-                    posterior_direction=np.array([0.0, 1.0, 0.0]),
+                    medial_direction=DEFAULT_MEDIAL_DIRECTION,
+                    posterior_direction=DEFAULT_POSTERIOR_DIRECTION,
                 )
                 validation = self._latest_validation(audit)
                 score_parts = self._score_candidate(
@@ -105,45 +110,26 @@ class HumeralHeadBestFitSearch:
         candidates.sort(key=lambda item: item["score"])
         return {
             "axis": axis,
-            "head_region_count": int(len(head_region_indices)),
+            "head_region_count": len(head_region_indices),
             "head_side": head_side,
             "seed_indices": [int(index) for index in seed_indices],
-            "candidate_count": int(len(candidates)),
+            "candidate_count": len(candidates),
             "valid_candidate_count": int(sum(1 for item in candidates if item.get("valid"))),
             "best": candidates[0] if candidates else None,
             "top_candidates": candidates[:max(1, self.top_k)],
             "all_candidates": candidates,
         }
 
-    def _head_region_indices(self, points: np.ndarray, axis: Dict[str, Any]) -> tuple:
+    def _head_region_indices(self, points: np.ndarray, axis: dict[str, Any]) -> tuple:
         """Selecciona una región proximal amplia donde debe estar la cabeza."""
-        origin = np.asarray(axis["origin"], dtype=float)
-        distal = np.asarray(axis["distal_point"], dtype=float)
-        direction = distal - origin
-        norm = np.linalg.norm(direction)
-        if norm <= 1e-12:
-            direction = np.asarray(axis["direction"], dtype=float)
-            norm = np.linalg.norm(direction)
-        direction = direction / norm
-        projections = (points - origin) @ direction
-        radial_distance = self._axis_radial_distance(points, origin, direction)
-        length = float(np.max(projections) - np.min(projections))
-        max_head_depth = min(90.0, max(35.0, self.proximal_fraction * float(axis["length"])))
+        info = axis_end_regions(points, axis, self.proximal_fraction)
+        projections = info["projections"]
+        head_side = info["head_side"]
 
-        low_limit = float(np.min(projections))
-        high_limit = float(np.max(projections))
-        end_depth = min(max_head_depth, max(20.0, 0.25 * length))
-        low_end = projections <= low_limit + end_depth
-        high_end = projections >= high_limit - end_depth
-        low_spread = self._end_radial_spread(radial_distance[low_end])
-        high_spread = self._end_radial_spread(radial_distance[high_end])
-
-        if high_spread >= low_spread:
-            mask = projections >= high_limit - max_head_depth
-            head_side = "high_projection"
+        if head_side == "high_projection":
+            mask = projections >= info["high_limit"] - info["max_depth"]
         else:
-            mask = projections <= low_limit + max_head_depth
-            head_side = "low_projection"
+            mask = projections <= info["low_limit"] + info["max_depth"]
 
         indices = np.where(mask)[0]
         if len(indices) < max(20, int(0.03 * len(points))):
@@ -158,7 +144,7 @@ class HumeralHeadBestFitSearch:
     def _select_seed_indices(
         self,
         points: np.ndarray,
-        axis: Dict[str, Any],
+        axis: dict[str, Any],
         head_region_indices: np.ndarray,
     ) -> np.ndarray:
         """Escoge semillas dispersas en región proximal, priorizando puntos lejos del eje."""
@@ -183,21 +169,14 @@ class HumeralHeadBestFitSearch:
         axial = np.outer(vecs @ direction, direction)
         return np.linalg.norm(vecs - axial, axis=1)
 
-    @staticmethod
-    def _end_radial_spread(radial_distance: np.ndarray) -> float:
-        """Mide robustamente que tan expandido es un extremo del hueso."""
-        if len(radial_distance) == 0:
-            return 0.0
-        return float(np.percentile(radial_distance, 90))
-
     def _score_candidate(
         self,
-        sphere: Dict[str, Any],
-        validation: Dict[str, Any],
+        sphere: dict[str, Any],
+        validation: dict[str, Any],
         points: np.ndarray,
         normals: np.ndarray,
         head_region_indices: np.ndarray,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Calcula costo combinado para un candidato."""
         coverage = self._surface_coverage(sphere, points, normals, head_region_indices)
         reference_values = validation.get("morphology_reference_values", {})
@@ -238,11 +217,11 @@ class HumeralHeadBestFitSearch:
 
     def _surface_coverage(
         self,
-        sphere: Dict[str, Any],
+        sphere: dict[str, Any],
         points: np.ndarray,
         normals: np.ndarray,
         head_region_indices: np.ndarray,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Cuenta puntos proximales compatibles con la superficie de la esfera."""
         center = np.asarray(sphere["center"], dtype=float)
         radius = float(sphere["radius"])
@@ -277,7 +256,7 @@ class HumeralHeadBestFitSearch:
         }
 
     @staticmethod
-    def _latest_validation(audit: AuditTrail) -> Dict[str, Any]:
+    def _latest_validation(audit: AuditTrail) -> dict[str, Any]:
         """Obtiene los datos del último paso validate_approximation."""
         for step in reversed(audit.get_report()["steps"]):
             if step["step_name"] == "validate_approximation":

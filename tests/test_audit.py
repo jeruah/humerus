@@ -1,12 +1,11 @@
 """Tests para el módulo de auditoría."""
 
-import unittest
-import numpy as np
-import tempfile
 import json
-from pathlib import Path
+import unittest
 
-from src.audit.trail import AuditTrail, AuditManager, StepRecord
+import numpy as np
+
+from src.audit.trail import AuditManager, AuditTrail, StepRecord
 
 
 class TestStepRecord(unittest.TestCase):
@@ -156,10 +155,12 @@ class TestAuditManager(unittest.TestCase):
         """Test creación de auditorías."""
         audit1 = self.manager.create_audit("seed_001")
         audit2 = self.manager.create_audit("seed_002")
-        
+
         self.assertEqual(len(self.manager.audits), 2)
         self.assertIn("seed_001", self.manager.audits)
         self.assertIn("seed_002", self.manager.audits)
+        self.assertEqual(audit1.seed_id, "seed_001")
+        self.assertEqual(audit2.seed_id, "seed_002")
     
     def test_get_summary_empty(self):
         """Test resumen con auditorías vacías."""

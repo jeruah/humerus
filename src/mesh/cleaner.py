@@ -1,9 +1,16 @@
-"""Limpieza topológica ligera de mallas triangulares."""
+"""Limpieza topológica de mallas triangulares basada en trimesh.
+
+Se usa ``trimesh`` para deduplicar vértices, eliminar caras degeneradas y
+duplicadas y — lo más importante — normalizar el winding para que las
+normales queden consistentes (outward). Esto evita que normales invertidas
+rompan silenciosamente el RANSAC de esfera o el lado articular.
+"""
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
+import trimesh
 
 
 @dataclass
@@ -15,8 +22,8 @@ class CleanedMesh:
     face_normals: np.ndarray
     face_areas: np.ndarray
     face_centroids: np.ndarray
-    adjacency: List[List[int]]
-    cleaning_report: Dict[str, Any]
+    adjacency: list[list[int]]
+    cleaning_report: dict[str, Any]
 
 
 class MeshCleaner:
@@ -28,6 +35,8 @@ class MeshCleaner:
         min_area: float = 1e-8,
         keep_largest_component: bool = True,
     ):
+        # vertex_precision se conserva para compatibilidad de API: el dedup
+        # de vértices lo resuelve trimesh (merge dentro de tol.merge).
         self.vertex_precision = int(vertex_precision)
         self.min_area = float(min_area)
         self.keep_largest_component = bool(keep_largest_component)
@@ -45,6 +54,7 @@ class MeshCleaner:
         original_face_count = len(faces)
         finite_vertex_mask = np.all(np.isfinite(vertices), axis=1)
         valid_face_mask = np.all(finite_vertex_mask[faces], axis=1)
+        removed_nonfinite_faces = int(original_face_count - np.count_nonzero(valid_face_mask))
         vertices = vertices[finite_vertex_mask]
         if np.count_nonzero(finite_vertex_mask) != original_vertex_count:
             remap = -np.ones(original_vertex_count, dtype=int)
@@ -53,54 +63,50 @@ class MeshCleaner:
         else:
             faces = faces[valid_face_mask]
 
-        vertices, faces = self._deduplicate_vertices(vertices, faces)
-        areas, normals, centroids = self._face_geometry(vertices, faces)
-        nondegenerate = areas > self.min_area
-        faces = faces[nondegenerate]
-        areas = areas[nondegenerate]
-        normals = normals[nondegenerate]
-        centroids = centroids[nondegenerate]
-
-        if len(faces) == 0:
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        areas = np.asarray(mesh.area_faces, dtype=float)
+        nondegenerate = np.isfinite(areas) & (areas > self.min_area)
+        removed_degenerate_faces = int(np.count_nonzero(~nondegenerate))
+        if not np.any(nondegenerate):
             raise ValueError("La malla no conserva triángulos válidos después de limpieza")
 
-        adjacency = self.build_adjacency(faces)
-        component_labels, component_sizes = self.connected_components(adjacency)
-        kept_component_count = int(len(component_sizes))
+        mesh.update_faces(nondegenerate)
+        # Dedup de vértices, caras duplicadas y fijado de winding/normales.
+        mesh.process(validate=True)
+
+        adjacency = MeshCleaner.build_adjacency(np.asarray(mesh.faces, dtype=int))
+        component_labels, component_sizes = MeshCleaner.connected_components(adjacency)
+        kept_component_count = len(component_sizes)
         removed_small_component_faces = 0
 
         if self.keep_largest_component and len(component_sizes) > 1:
             largest = int(np.argmax(component_sizes))
             keep = component_labels == largest
             removed_small_component_faces = int(np.count_nonzero(~keep))
-            faces = faces[keep]
-            areas = areas[keep]
-            normals = normals[keep]
-            centroids = centroids[keep]
-            vertices, faces = self._compact_vertices(vertices, faces)
-            areas, normals, centroids = self._face_geometry(vertices, faces)
-            adjacency = self.build_adjacency(faces)
-            component_labels, component_sizes = self.connected_components(adjacency)
+            mesh.update_faces(keep)
+            mesh.remove_unreferenced_vertices()
+            adjacency = MeshCleaner.build_adjacency(np.asarray(mesh.faces, dtype=int))
+            component_labels, component_sizes = MeshCleaner.connected_components(adjacency)
 
         report = {
             "original_vertex_count": int(original_vertex_count),
             "original_face_count": int(original_face_count),
-            "clean_vertex_count": int(len(vertices)),
-            "clean_face_count": int(len(faces)),
-            "removed_nonfinite_faces": int(original_face_count - np.count_nonzero(valid_face_mask)),
-            "removed_degenerate_faces": int(np.count_nonzero(~nondegenerate)),
+            "clean_vertex_count": len(mesh.vertices),
+            "clean_face_count": len(mesh.faces),
+            "removed_nonfinite_faces": removed_nonfinite_faces,
+            "removed_degenerate_faces": removed_degenerate_faces,
             "component_count_before_filter": kept_component_count,
-            "component_count": int(len(component_sizes)),
+            "component_count": len(component_sizes),
             "removed_small_component_faces": removed_small_component_faces,
-            "total_area": float(np.sum(areas)),
+            "total_area": float(np.sum(np.asarray(mesh.area_faces, dtype=float))),
         }
 
         return CleanedMesh(
-            vertices=vertices,
-            faces=faces,
-            face_normals=normals,
-            face_areas=areas,
-            face_centroids=centroids,
+            vertices=np.asarray(mesh.vertices, dtype=float),
+            faces=np.asarray(mesh.faces, dtype=int),
+            face_normals=np.asarray(mesh.face_normals, dtype=float),
+            face_areas=np.asarray(mesh.area_faces, dtype=float),
+            face_centroids=np.asarray(mesh.triangles_center, dtype=float),
             adjacency=adjacency,
             cleaning_report=report,
         )
@@ -117,10 +123,11 @@ class MeshCleaner:
         return normals
 
     @staticmethod
-    def build_adjacency(faces: np.ndarray) -> List[List[int]]:
+    def build_adjacency(faces: np.ndarray) -> list[list[int]]:
         """Construye adyacencia de triángulos por aristas compartidas."""
-        edge_to_faces: Dict[tuple, List[int]] = {}
-        for face_index, face in enumerate(np.asarray(faces, dtype=int)):
+        faces = np.asarray(faces, dtype=int)
+        edge_to_faces: dict[tuple, list[int]] = {}
+        for face_index, face in enumerate(faces):
             edges = (
                 tuple(sorted((int(face[0]), int(face[1])))),
                 tuple(sorted((int(face[1]), int(face[2])))),
@@ -129,16 +136,16 @@ class MeshCleaner:
             for edge in edges:
                 edge_to_faces.setdefault(edge, []).append(face_index)
 
-        adjacency = [set() for _ in range(len(faces))]
+        adjacency: list[list[int]] = [[] for _ in range(len(faces))]
         for owners in edge_to_faces.values():
             if len(owners) < 2:
                 continue
             for owner in owners:
-                adjacency[owner].update(other for other in owners if other != owner)
-        return [sorted(neighbors) for neighbors in adjacency]
+                adjacency[owner].extend(other for other in owners if other != owner)
+        return [sorted(set(neighbors)) for neighbors in adjacency]
 
     @staticmethod
-    def connected_components(adjacency: List[List[int]]) -> tuple:
+    def connected_components(adjacency: list[list[int]]) -> tuple:
         """Etiqueta componentes conectados de una lista de adyacencia."""
         labels = -np.ones(len(adjacency), dtype=int)
         sizes = []
@@ -160,33 +167,10 @@ class MeshCleaner:
             label += 1
         return labels, np.asarray(sizes, dtype=int)
 
-    def _deduplicate_vertices(self, vertices: np.ndarray, faces: np.ndarray) -> tuple:
-        """Deduplica vértices por coordenadas redondeadas."""
-        rounded = np.round(vertices, decimals=self.vertex_precision)
-        unique, inverse = np.unique(rounded, axis=0, return_inverse=True)
-        deduped_vertices = np.zeros((len(unique), 3), dtype=float)
-        counts = np.bincount(inverse)
-        np.add.at(deduped_vertices, inverse, vertices)
-        deduped_vertices /= counts[:, None]
-        return deduped_vertices, inverse[faces]
-
     @staticmethod
     def _compact_vertices(vertices: np.ndarray, faces: np.ndarray) -> tuple:
-        """Descarta vértices no usados y remapea caras."""
+        """Descarta vértices no usados y remapea caras (legacy)."""
         used = np.unique(faces)
         remap = -np.ones(len(vertices), dtype=int)
         remap[used] = np.arange(len(used))
         return vertices[used], remap[faces]
-
-    @staticmethod
-    def _face_geometry(vertices: np.ndarray, faces: np.ndarray) -> tuple:
-        """Calcula área, normal y centroide por triángulo."""
-        triangles = vertices[faces]
-        cross = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
-        lengths = np.linalg.norm(cross, axis=1)
-        areas = 0.5 * lengths
-        normals = np.zeros_like(cross, dtype=float)
-        valid = lengths > 1e-12
-        normals[valid] = cross[valid] / lengths[valid, None]
-        centroids = triangles.mean(axis=1)
-        return areas, normals, centroids

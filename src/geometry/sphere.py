@@ -1,6 +1,5 @@
 """Primitivas geométricas para esferas 3D."""
 
-from typing import Optional, Tuple
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -10,7 +9,7 @@ class SphereGeometry:
     """Operaciones matemáticas puras sobre esferas."""
 
     @staticmethod
-    def from_four_points(points: np.ndarray) -> Optional[Tuple[np.ndarray, float]]:
+    def from_four_points(points: np.ndarray) -> tuple[np.ndarray, float] | None:
         """Calcula la esfera definida por cuatro puntos no coplanares."""
         points = np.asarray(points, dtype=float)
         if points.shape != (4, 3):
@@ -27,7 +26,7 @@ class SphereGeometry:
         return center, radius
 
     @staticmethod
-    def algebraic_initial_fit(points: np.ndarray) -> Tuple[np.ndarray, float]:
+    def algebraic_initial_fit(points: np.ndarray) -> tuple[np.ndarray, float]:
         """Ajuste algebraico rápido usado como semilla de optimización."""
         points = np.asarray(points, dtype=float)
         if points.ndim != 2 or points.shape[1] != 3 or len(points) < 4:
@@ -48,7 +47,7 @@ class SphereGeometry:
         return np.linalg.norm(points - center, axis=1) - float(radius)
 
     @staticmethod
-    def radial_unit_vectors(points: np.ndarray, center: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def radial_unit_vectors(points: np.ndarray, center: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Vectores radiales unitarios y máscara de puntos válidos."""
         points = np.asarray(points, dtype=float)
         center = np.asarray(center, dtype=float)
@@ -94,11 +93,11 @@ class SphereGeometry:
         points: np.ndarray,
         initial_center: np.ndarray,
         initial_radius: float,
-        weights: Optional[np.ndarray] = None,
-        radius_bounds: Tuple[float, float] = (0.0, np.inf),
+        weights: np.ndarray | None = None,
+        radius_bounds: tuple[float, float] = (0.0, np.inf),
         f_scale: float = 1.0,
         max_nfev: int = 300,
-    ) -> Tuple[np.ndarray, float, float, float]:
+    ) -> tuple[np.ndarray, float, float, float]:
         """Refina esfera minimizando distancia geométrica radial con pérdida Huber."""
         points = np.asarray(points, dtype=float)
         if len(points) < 4:

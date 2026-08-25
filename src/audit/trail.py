@@ -9,12 +9,18 @@ Este módulo proporciona la clase AuditTrail que:
 La auditoría es obligatoria para garantizar reproducibilidad y confiabilidad.
 """
 
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, asdict
-from datetime import datetime
 import json
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from typing import Any
+
 import numpy as np
 
+from ..config import (
+    DEFAULT_MAX_ERROR,
+    DEFAULT_MORPHOLOGY_REFERENCE,
+    RADIUS_RANGE,
+)
 from ..validation.sphere import (
     ApproximationValidationConfig,
     MorphologyReference,
@@ -27,9 +33,9 @@ class StepRecord:
     """Registro de un paso en el proceso."""
     step_name: str
     timestamp: str
-    data: Dict[str, Any]
+    data: dict[str, Any]
     
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         """Convierte a diccionario JSON-serializable."""
         result = asdict(self)
         # Convertir arrays de numpy a listas
@@ -65,11 +71,11 @@ class AuditTrail:
             Identificador de la semilla (default: "")
         """
         self.seed_id = seed_id
-        self.steps: List[StepRecord] = []
-        self.validations: Dict[str, bool] = {}
+        self.steps: list[StepRecord] = []
+        self.validations: dict[str, bool] = {}
         self.start_time = datetime.now()
     
-    def log_step(self, step_name: str, data: Dict[str, Any]) -> None:
+    def log_step(self, step_name: str, data: dict[str, Any]) -> None:
         """
         Registra un paso en el proceso.
         
@@ -96,7 +102,7 @@ class AuditTrail:
     def validate_seed(
         self, 
         point: np.ndarray, 
-        articulation_region: Optional[np.ndarray] = None,
+        articulation_region: np.ndarray | None = None,
         curvature_threshold: float = 0.1
     ) -> bool:
         """
@@ -156,26 +162,26 @@ class AuditTrail:
     
     def is_valid_approximation(
         self,
-        sphere: Dict[str, Any],
-        max_error: float = 2.0,
-        min_radius: float = 17.0,
-        max_radius: float = 40.0,
-        axis: Optional[Dict[str, Any]] = None,
-        surface_points: Optional[np.ndarray] = None,
-        medial_direction: Optional[np.ndarray] = None,
-        posterior_direction: Optional[np.ndarray] = None,
-        reference_min_roc: float = 17.0,
-        reference_max_roc: float = 30.0,
-        reference_mean_roc: float = 22.5,
-        reference_sd_roc: float = 2.8,
-        reference_min_medial_offset: float = 1.0,
-        reference_max_medial_offset: float = 14.0,
-        reference_mean_medial_offset: float = 6.8,
-        reference_sd_medial_offset: float = 2.5,
-        reference_min_posterior_offset: float = 0.0,
-        reference_max_posterior_offset: float = 10.0,
-        reference_mean_posterior_offset: float = 2.0,
-        reference_sd_posterior_offset: float = 2.0,
+        sphere: dict[str, Any],
+        max_error: float = DEFAULT_MAX_ERROR,
+        min_radius: float = RADIUS_RANGE[0],
+        max_radius: float = RADIUS_RANGE[1],
+        axis: dict[str, Any] | None = None,
+        surface_points: np.ndarray | None = None,
+        medial_direction: np.ndarray | None = None,
+        posterior_direction: np.ndarray | None = None,
+        reference_min_roc: float = DEFAULT_MORPHOLOGY_REFERENCE.min_roc,
+        reference_max_roc: float = DEFAULT_MORPHOLOGY_REFERENCE.max_roc,
+        reference_mean_roc: float = DEFAULT_MORPHOLOGY_REFERENCE.mean_roc,
+        reference_sd_roc: float = DEFAULT_MORPHOLOGY_REFERENCE.sd_roc,
+        reference_min_medial_offset: float = DEFAULT_MORPHOLOGY_REFERENCE.min_medial_offset,
+        reference_max_medial_offset: float = DEFAULT_MORPHOLOGY_REFERENCE.max_medial_offset,
+        reference_mean_medial_offset: float = DEFAULT_MORPHOLOGY_REFERENCE.mean_medial_offset,
+        reference_sd_medial_offset: float = DEFAULT_MORPHOLOGY_REFERENCE.sd_medial_offset,
+        reference_min_posterior_offset: float = DEFAULT_MORPHOLOGY_REFERENCE.min_posterior_offset,
+        reference_max_posterior_offset: float = DEFAULT_MORPHOLOGY_REFERENCE.max_posterior_offset,
+        reference_mean_posterior_offset: float = DEFAULT_MORPHOLOGY_REFERENCE.mean_posterior_offset,
+        reference_sd_posterior_offset: float = DEFAULT_MORPHOLOGY_REFERENCE.sd_posterior_offset,
         enforce_morphology_reference: bool = False,
     ) -> bool:
         """
@@ -257,18 +263,18 @@ class AuditTrail:
         max_value: float,
         mean: float,
         sd: float,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Empaqueta valor, rango, media, desviación y z-score."""
         return SphereValidator.reference_stat(value, min_value, max_value, mean, sd)
 
     @staticmethod
     def compute_morphological_metrics(
-        sphere: Dict[str, Any],
-        axis: Dict[str, Any],
-        surface_points: Optional[np.ndarray] = None,
-        medial_direction: Optional[np.ndarray] = None,
-        posterior_direction: Optional[np.ndarray] = None,
-    ) -> Dict[str, Any]:
+        sphere: dict[str, Any],
+        axis: dict[str, Any],
+        surface_points: np.ndarray | None = None,
+        medial_direction: np.ndarray | None = None,
+        posterior_direction: np.ndarray | None = None,
+    ) -> dict[str, Any]:
         """
         Calcula medidas morfológicas de postprocesado.
 
@@ -288,9 +294,9 @@ class AuditTrail:
     @staticmethod
     def _transverse_frame(
         longitudinal: np.ndarray,
-        medial_direction: Optional[np.ndarray] = None,
-        posterior_direction: Optional[np.ndarray] = None,
-        surface_points: Optional[np.ndarray] = None,
+        medial_direction: np.ndarray | None = None,
+        posterior_direction: np.ndarray | None = None,
+        surface_points: np.ndarray | None = None,
     ) -> tuple:
         """Construye dos direcciones ortonormales perpendiculares al eje."""
         return SphereValidator.transverse_frame(
@@ -302,13 +308,13 @@ class AuditTrail:
 
     @staticmethod
     def _project_perpendicular(
-        vector: Optional[np.ndarray],
+        vector: np.ndarray | None,
         axis: np.ndarray,
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         """Proyecta un vector al plano perpendicular del eje y lo normaliza."""
         return SphereValidator.project_perpendicular(vector, axis)
     
-    def get_report(self) -> Dict[str, Any]:
+    def get_report(self) -> dict[str, Any]:
         """
         Genera reporte completo de auditoría.
         
@@ -356,7 +362,7 @@ class AuditManager:
     
     def __init__(self):
         """Inicializa gestor de auditorías."""
-        self.audits: Dict[str, AuditTrail] = {}
+        self.audits: dict[str, AuditTrail] = {}
         self.start_time = datetime.now()
     
     def create_audit(self, seed_id: str) -> AuditTrail:
@@ -377,7 +383,7 @@ class AuditManager:
         self.audits[seed_id] = audit
         return audit
     
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> dict[str, Any]:
         """
         Resumen estadístico de todas las auditorías.
         

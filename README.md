@@ -14,11 +14,15 @@ El enfoque actual ya no depende de una sola semilla manual ni de comparar el di�
 - Segmentación articular conectada sobre triángulos compatibles.
 - Primitivas geométricas de esfera centralizadas en `src/geometry/sphere.py`.
 - Reglas de validación de esfera centralizadas en `src/validation/sphere.py`.
+- Configuración central (rangos, tolerancias, referencias morfológicas y marco
+  anatómico) en `src/config/`.
+- Prior académico por ajuste local de esfera (`use_curvature_prior`) que guía
+  el muestreo y la segmentación del RANSAC hacia el casquete articular.
 - Estimación robusta del eje longitudinal desde la diáfisis, sin usar la esfera.
 - Auditoría JSON-friendly de semillas, iteraciones, convergencia y métricas.
 - Validación morfológica con ROC, medial offset y posterior offset.
 - Demo web local para cargar STL, ver la mejor esfera automática y comparar con semillas manuales.
-- Suite de tests: `56 passed`.
+- Suite de tests: `124 passed` (cobertura branch ≥85%).
 
 ## Instalación
 
@@ -33,6 +37,7 @@ Dependencias principales:
 numpy
 scipy
 scikit-learn
+trimesh
 matplotlib
 plotly
 pytest
@@ -61,6 +66,19 @@ python examples/demo_interactive_web.py \
   --samples 8000 \
   --best-fit-seeds 1000 \
   --best-fit-top 5
+```
+
+> `--best-fit-seeds` tiene doble sentido: con una malla limpia disponible
+> (STL precargado) son las iteraciones RANSAC; en el fallback poblacional
+> basado solo en puntos son la cantidad de semillas a probar.
+
+Otros demos incluidos:
+
+```bash
+python examples/demo_visualization.py            # Visualización estática matplotlib
+python examples/demo_wayland.py                  # Demos en navegador (Wayland)
+python examples/demo_head_risk_map.py            # Mapa de riesgo de falsos positivos
+python examples/demo_head_risk_map_interactive.py  # Mismo mapa, versión interactiva
 ```
 
 Usar datos sintéticos para verificación rápida:
@@ -98,6 +116,7 @@ La interfaz permite:
    - cobertura angular,
    - refit geométrico robusto.
 6. `SphereRansacFitter` detecta la esfera articular:
+   - Calcula un prior de esfericidad local (ajuste de esfera al vecindario de cada cara) para filtrar/ponderar las regiones candidatas.
    - Evalúa ambos extremos del húmero para no confundir cabeza humeral y codo.
    - Selecciona 4 caras distribuidas dentro de cada extremo candidato.
    - Calcula la esfera inicial si los puntos no son coplanares.
@@ -137,6 +156,8 @@ Tras el refit se recorta un núcleo conectado con residuo radial bajo. Por eso l
 
 Además, el soporte debe caer en el hemisferio articular: el lado de la esfera que mira lejos del eje diafisario. Esto evita aceptar parches redondeados del cuello aunque tengan bajo error local.
 
+Antes de la búsqueda, un prior académico por ajuste local de esfera (`use_curvature_prior=True`) marca las caras cuyo vecindario se ajusta a una esfera con radio fisiológico y RMSE bajo. Este prior filtra las regiones candidatas de cada extremo, pondera el muestreo de cuatro puntos y restringe la expansión conectada, concentrando la búsqueda en el casquete articular. Es el equivalente a un estudio de curvatura implícito (κ₁ ≈ κ₂ ≈ 1/R) pero robusto a mallas decimadas. Se puede desactivar con `SphereRansacConfig(use_curvature_prior=False)` para comparar.
+
 `src/optimization/best_fit.py` se mantiene como fallback poblacional para datos sin malla limpia, por ejemplo el demo sintético basado solo en puntos.
 
 ## Métricas Morfológicas
@@ -171,39 +192,45 @@ humero/
 ├── examples/
 │   ├── demo_interactive_web.py      # Demo principal con carga STL y best-fit
 │   ├── demo_visualization.py
-│   └── demo_wayland.py
+│   ├── demo_wayland.py
+│   ├── demo_head_risk_map.py
+│   └── demo_head_risk_map_interactive.py
 ├── src/
 │   ├── approximation/sphere.py      # Ajuste iterativo de esfera
 │   ├── audit/trail.py               # Auditoría y métricas morfológicas
 │   ├── axis/longitudinal.py         # Eje diafisario robusto
+│   ├── config/                      # Rangos, referencias y marco anatómico centralizados
 │   ├── geometry/                    # Curvatura, análisis diferencial y primitivas de esfera
-│   ├── mesh/                        # Carga, limpieza y discretización STL
+│   ├── mesh/                        # Carga, limpieza y discretización STL (trimesh)
 │   ├── optimization/
 │   │   ├── best_fit.py              # Fallback poblacional de esfera
-│   │   ├── sphere_ransac.py         # RANSAC esférico y segmentación articular
+│   │   ├── sphere_ransac.py         # RANSAC esférico, prior y segmentación articular
 │   │   └── refinement.py
 │   ├── validation/                  # Validación de semillas y esferas
 │   └── visualization/               # Visualización matplotlib/Plotly
 └── tests/
+    ├── _synthetic.py                # Generadores de húmero sintético compartidos
     ├── test_audit.py
     ├── test_integration.py
+    ├── test_mesh_and_geometry.py
     ├── test_scientific_pipeline.py
-    └── test_visualization.py
+    ├── test_visualization.py
+    └── test_web_and_serialization.py
 ```
 
 ## Resultados de Referencia Rápida
 
-Con RANSAC de 1000 iteraciones sobre los STL incluidos:
+Con RANSAC de 1000 iteraciones y prior de curvatura sobre los STL incluidos:
 
 ```text
 Human_humerus_2_reduced.stl:
-  ROC 20.020 mm, MO 9.893 mm, PO 2.540 mm, RMSE 0.374 mm, MAD 0.214 mm, P95 0.731 mm, compact 62.2%, lado 56.3%, score 4.949
+  ROC 19.797 mm, MO 9.825 mm, PO 2.590 mm, RMSE 0.311 mm, MAD 0.201 mm, P95 0.620 mm, compact 67.4%, lado 52.8%, score 5.209
 
 HumeroFinal1.stl:
-  ROC 21.089 mm, MO 3.957 mm, PO 2.806 mm, RMSE 0.303 mm, MAD 0.141 mm, P95 0.695 mm, compact 60.6%, lado 56.6%, score 3.137
+  ROC 21.438 mm, MO 9.573 mm, PO 2.836 mm, RMSE 0.251 mm, MAD 0.150 mm, P95 0.543 mm, compact 59.0%, lado 53.6%, score 2.798
 
 Right_humerus_bone_one-piece.stl:
-  ROC 21.188 mm, MO 14.402 mm, PO 7.355 mm, RMSE 0.367 mm, MAD 0.199 mm, P95 0.786 mm, compact 56.6%, lado 54.6%, score 22.395
+  ROC 21.081 mm, MO 14.470 mm, PO 7.401 mm, RMSE 0.336 mm, MAD 0.194 mm, P95 0.706 mm, compact 57.4%, lado 54.2%, score 22.567
 ```
 
 Estos valores son controles de funcionamiento, no conclusiones clínicas.
@@ -228,4 +255,4 @@ El cuello de botella ya no es agregar más iteraciones manuales, sino mejorar el
 
 Proyecto académico - Universidad.
 
-Última actualización: 2026-07-15
+Última actualización: 2026-08-24

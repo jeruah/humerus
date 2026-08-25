@@ -23,7 +23,7 @@ import sys
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 from plotly.utils import PlotlyJSONEncoder
@@ -31,6 +31,7 @@ from plotly.utils import PlotlyJSONEncoder
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from demo_head_risk_map import local_sphere_fit_scan, synthetic_humerus_points
+
 from src.mesh.discretizer import MeshDiscretizer
 from src.mesh.loader import STLLoader
 from src.visualization.interactive_web import InteractiveWeb3D
@@ -46,7 +47,7 @@ def load_points(args: argparse.Namespace) -> np.ndarray:
     return synthetic_humerus_points()
 
 
-def to_json_array(values: np.ndarray) -> List[Optional[float]]:
+def to_json_array(values: np.ndarray) -> list[float | None]:
     """Convierte a lista JSON-serializable, con null donde hay NaN."""
     return [None if not np.isfinite(v) else float(v) for v in values]
 
@@ -274,7 +275,7 @@ def run_server(args: argparse.Namespace) -> None:
     print(f"Ajuste inicial (radio_estimado={args.radius_estimate}mm, search_radius={search_radius:.2f}mm)...")
     rmse, fitted_radius = local_sphere_fit_scan(points, search_radius, args.radius_estimate, args.min_neighbors)
 
-    state: Dict[str, Any] = {"points": points, "rmse": rmse, "fitted_radius": fitted_radius}
+    state: dict[str, Any] = {"points": points, "rmse": rmse, "fitted_radius": fitted_radius}
     html = build_html(points, rmse, fitted_radius, args).encode("utf-8")
 
     class RiskMapHandler(BaseHTTPRequestHandler):
@@ -297,7 +298,7 @@ def run_server(args: argparse.Namespace) -> None:
                 return
             self.send_error(404)
 
-        def _send_json(self, payload: Dict[str, Any], status_code: int = 200) -> None:
+        def _send_json(self, payload: dict[str, Any], status_code: int = 200) -> None:
             response = json.dumps(payload).encode("utf-8")
             self.send_response(status_code)
             self.send_header("Content-Type", "application/json")

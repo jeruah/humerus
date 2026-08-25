@@ -7,12 +7,11 @@ Proporciona visualización 3D totalmente interactiva con capacidades de:
 - Capas (malla, esfera, eje)
 """
 
-import numpy as np
-from typing import Optional, List, Dict, Tuple
-import plotly.graph_objects as go
-import plotly.io as pio
 import tempfile
 import webbrowser
+
+import numpy as np
+import plotly.graph_objects as go
 
 
 class InteractiveWeb3D:
@@ -243,7 +242,7 @@ class InteractiveWeb3D:
         name: str = 'Curvatura',
         colorbar_title: str = 'Score',
         size: int = 3,
-        hover_text: Optional[List[str]] = None,
+        hover_text: list[str] | None = None,
     ):
         """
         Grafica una nube de puntos coloreada por un valor continuo por punto.
@@ -291,7 +290,7 @@ class InteractiveWeb3D:
             text=hover_text,
         ))
 
-    def plot_approximations(self, approximations: List[Dict],
+    def plot_approximations(self, approximations: list[dict],
                            name: str = 'Aproximaciones'):
         """
         Grafica múltiples aproximaciones de esferas.
@@ -332,13 +331,13 @@ class InteractiveWeb3D:
         temp_file.close()
         
         print(f"✓ Visualización guardada: {temp_file.name}")
-        print(f"✓ Abriendo en navegador...")
+        print("✓ Abriendo en navegador...")
         webbrowser.open(f'file://{temp_file.name}')
-        print(f"\n🎯 CONTROLES DEL NAVEGADOR:")
-        print(f"   • 🖱️  Rotar: Clic + arrastrar")
-        print(f"   • 🔍 Zoom: Rueda del ratón o pellizco")
-        print(f"   • ↔️  Pan: Clic derecho + arrastrar")
-        print(f"   • 🏠 Reset: Botón en la esquina superior")
+        print("\n🎯 CONTROLES DEL NAVEGADOR:")
+        print("   • 🖱️  Rotar: Clic + arrastrar")
+        print("   • 🔍 Zoom: Rueda del ratón o pellizco")
+        print("   • ↔️  Pan: Clic derecho + arrastrar")
+        print("   • 🏠 Reset: Botón en la esquina superior")
     
     def save(self, filepath: str):
         """

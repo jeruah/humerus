@@ -1,7 +1,7 @@
 """Validación de viabilidad de semillas."""
 
+
 import numpy as np
-from typing import Optional
 
 from ..geometry.sphere import SphereGeometry
 
@@ -9,14 +9,13 @@ from ..geometry.sphere import SphereGeometry
 class SeedValidator:
     """
     Valida que puntos semilla sean viables para aproximación.
-    
-    Implementar en esta clase:
+
     - Validación de punto dentro de región articular
     - Validación de curvatura compatible con esfera
     - Validación de distancia a otra geometría del húmero
     """
     
-    def __init__(self, curvature_data: Optional[np.ndarray] = None):
+    def __init__(self, curvature_data: np.ndarray | None = None):
         """
         Inicializa validador de semillas.
         

@@ -1,6 +1,6 @@
 # Resumen de Implementación
 
-Última actualización: 2026-07-15
+Última actualización: 2026-08-24
 
 Este documento resume el estado real del proyecto después de las iteraciones recientes. La documentación de agentes IA, Copilot y quickstart fue retirada porque ya no representa el flujo de trabajo ni ayuda a mejorar la precisión geométrica.
 
@@ -32,12 +32,12 @@ Archivos:
 
 Estado:
 
-- Carga STL ASCII y binario.
+- Carga STL ASCII y binario basada en `trimesh` (detección robusta de formato, dedup de vértices y consistencia de winding/normales).
 - Extrae vértices, caras y normales.
 - Limpia triángulos degenerados y vértices duplicados.
 - Calcula áreas, centroides, normales coherentes y adyacencia por aristas.
 - Filtra componentes conectados pequeños cuando se requiere conservar solo el componente principal.
-- Discretiza superficie con muestreo uniforme.
+- Discretiza superficie con muestreo uniforme (`trimesh.sample.sample_surface`) y adaptativo.
 - Entrega `surface_points` y `surface_normals` para el pipeline geométrico.
 
 ### Ajuste de Esfera Desde Semilla
@@ -82,6 +82,7 @@ Clase:
 
 Estado:
 
+- Calcula un prior de esfericidad local por cara (ajuste de esfera al vecindario) que guía el RANSAC.
 - Evalúa ambos extremos del húmero para no confundir cabeza humeral y codo.
 - Selecciona cuatro caras distribuidas por extremo e iteración.
 - Calcula esfera inicial desde cuatro puntos no coplanares.
@@ -230,72 +231,58 @@ pytest -q
 Resultado actual:
 
 ```text
-56 passed
+124 passed
 ```
 
 Cobertura funcional en tests:
 
 - Auditoría y serialización.
 - Visualización 3D.
-- Carga STL ASCII/binaria.
-- Discretización uniforme.
-- Curvatura en región esférica.
-- Estimación de eje robusta en húmero completo e incompleto.
-- Validación de offsets morfológicos.
+- Carga STL ASCII/binaria (incluye errores y formatos inválidos).
+- Discretización uniforme y adaptativa.
+- Curvatura en región esférica y detección por operadores locales.
+- Estimación de eje robusta en húmero completo e incompleto (y métodos PCA/mínimos cuadrados).
+- Validación de offsets morfológicos y soporte superficial.
 - Delegación de reglas desde auditoría hacia `SphereValidator`.
-- Respuesta JSON de la demo web.
+- Respuesta JSON de la demo web y handlers HTTP (upload/approximate).
 - Best-fit automático recuperando una esfera sintética conocida.
+- Prior de esfericidad local marcando el casquete sobre la diáfisis.
 - Limpieza de malla y adyacencia triangular.
-- Esfera exacta desde cuatro puntos.
-- RANSAC esférico tolerando tallo/outliers.
+- Esfera exacta desde cuatro puntos y casos coplanares.
+- RANSAC esférico tolerando tallo/outliers y errores sin candidatos.
 - Serialización de región articular detectada.
 
 ## Resultados de Smoke Test en STL de Muestra
 
-Con RANSAC de 1000 iteraciones sobre mallas limpias:
+Con RANSAC de 1000 iteraciones y prior de curvatura sobre mallas limpias:
 
 ```text
 Human_humerus_2_reduced.stl
-  ROC: 20.020 mm
-  MO: 9.893 mm
-  PO: 2.540 mm
-  RMSE: 0.374 mm
-  MAD: 0.214 mm
-  P95 radial: 0.731 mm
-  caras compatibles: 1287
-  area ratio: 0.0802
-  cobertura angular: 0.842
-  compacidad angular: 0.622
-  lado articular: 0.563
-  score: 4.949
+  ROC: 19.797 mm
+  MO: 9.825 mm
+  PO: 2.590 mm
+  RMSE: 0.311 mm
+  MAD: 0.201 mm
+  P95 radial: 0.620 mm
+  score: 5.209
 
 HumeroFinal1.stl
-  ROC: 21.089 mm
-  MO: 3.957 mm
-  PO: 2.806 mm
-  RMSE: 0.303 mm
-  MAD: 0.141 mm
-  P95 radial: 0.695 mm
-  caras compatibles: 355
-  area ratio: 0.1263
-  cobertura angular: 0.896
-  compacidad angular: 0.606
-  lado articular: 0.566
-  score: 3.137
+  ROC: 21.438 mm
+  MO: 9.573 mm
+  PO: 2.836 mm
+  RMSE: 0.251 mm
+  MAD: 0.150 mm
+  P95 radial: 0.543 mm
+  score: 2.798
 
 Right_humerus_bone_one-piece.stl
-  ROC: 21.188 mm
-  MO: 14.402 mm
-  PO: 7.355 mm
-  RMSE: 0.367 mm
-  MAD: 0.199 mm
-  P95 radial: 0.786 mm
-  caras compatibles: 411
-  area ratio: 0.0750
-  cobertura angular: 0.894
-  compacidad angular: 0.566
-  lado articular: 0.546
-  score: 22.395
+  ROC: 21.081 mm
+  MO: 14.470 mm
+  PO: 7.401 mm
+  RMSE: 0.336 mm
+  MAD: 0.194 mm
+  P95 radial: 0.706 mm
+  score: 22.567
 ```
 
 Estos smoke tests verifican comportamiento del pipeline; no deben interpretarse como validación clínica.

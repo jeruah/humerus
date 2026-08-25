@@ -7,18 +7,15 @@ Este módulo proporciona herramientas para visualizar:
 - Puntos de superficie y semillas
 """
 
-import numpy as np
-from typing import Optional, List, Dict, Tuple, Union
-import os
+
 import matplotlib
+import numpy as np
 
 # Usar Agg backend que siempre funciona sin GUI
 matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-from matplotlib.patches import Circle
-import matplotlib.patches as mpatches
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
 class Visualizer3D:
@@ -26,7 +23,7 @@ class Visualizer3D:
     Visualizador 3D para malla, esfera y eje del húmero.
     """
     
-    def __init__(self, figsize: Tuple[int, int] = (14, 10)):
+    def __init__(self, figsize: tuple[int, int] = (14, 10)):
         """
         Inicializa visualizador.
         
@@ -77,32 +74,16 @@ class Visualizer3D:
         """
         if self.ax is None:
             self.create_figure()
-        
-        # Graficar triángulos
-        for face in faces:
-            triangle = vertices[face]
-            
-            # Cerrar triángulo
-            triangle_closed = np.vstack([triangle, triangle[0]])
-            
-            self.ax.plot(
-                triangle_closed[:, 0],
-                triangle_closed[:, 1],
-                triangle_closed[:, 2],
-                color=edgecolor,
-                linewidth=linewidth,
-                alpha=0.5
-            )
-        
-        # Graficar vértices
-        self.ax.scatter(
-            vertices[:, 0],
-            vertices[:, 1],
-            vertices[:, 2],
-            c=color,
-            s=1,
-            alpha=alpha
+
+        triangles = np.asarray(vertices, dtype=float)[np.asarray(faces, dtype=int)]
+        collection = Poly3DCollection(
+            triangles,
+            facecolors=color,
+            alpha=alpha,
+            edgecolor=edgecolor,
+            linewidth=linewidth,
         )
+        self.ax.add_collection3d(collection)
     
     def plot_sphere(
         self,
@@ -271,7 +252,7 @@ class Visualizer3D:
     def plot_seeds(
         self,
         seeds: np.ndarray,
-        valid_mask: Optional[np.ndarray] = None,
+        valid_mask: np.ndarray | None = None,
         color_valid: str = 'green',
         color_invalid: str = 'orange',
         size: float = 50,
@@ -326,7 +307,7 @@ class Visualizer3D:
     
     def plot_approximations(
         self,
-        approximations: List[Dict],
+        approximations: list[dict],
         color: str = 'red',
         alpha: float = 0.2,
         n_points: int = 20
@@ -419,8 +400,8 @@ class Visualizer3D:
     
     def show_interactive(self):
         """Abre la visualización en navegador web (Wayland compatible)."""
-        import webbrowser
         import tempfile
+        import webbrowser
         
         if self.fig is None:
             raise ValueError("Debes llamar a create_figure() primero")
@@ -483,7 +464,7 @@ class Visualizer3D:
 class InteractiveVisualizer:
     """Visualizador interactivo con vistas comparativas."""
     
-    def __init__(self, figsize: Tuple[int, int] = (18, 6)):
+    def __init__(self, figsize: tuple[int, int] = (18, 6)):
         """
         Inicializa visualizador interactivo.
         
@@ -496,7 +477,7 @@ class InteractiveVisualizer:
         self.fig = None
         self.axes = None
     
-    def create_comparison_view(self, meshes: Union[Dict, List[Dict]], approximations: List[Dict], axis_data: Optional[Dict] = None):
+    def create_comparison_view(self, meshes: dict | list[dict], approximations: list[dict], axis_data: dict | None = None):
         """
         Crea vista comparativa de múltiples aproximaciones.
         
@@ -528,14 +509,17 @@ class InteractiveVisualizer:
                 mesh = meshes_list[i]
                 vertices = mesh['vertices']
                 faces = mesh['faces']
-                
-                # Plotear mesh directamente
-                for face in faces:
-                    if len(face) >= 3:
-                        # Cerrar el triangulo
-                        indices = list(face[:3]) + [face[0]]
-                        points = vertices[indices]
-                        ax.plot(points[:, 0], points[:, 1], points[:, 2], 'gray', linewidth=0.1)
+
+                # Plotear mesh con una sola colección (rápido para mallas grandes)
+                triangles = np.asarray(vertices, dtype=float)[np.asarray(faces, dtype=int)]
+                collection = Poly3DCollection(
+                    triangles,
+                    facecolors='lightblue',
+                    alpha=0.3,
+                    edgecolor='gray',
+                    linewidth=0.1,
+                )
+                ax.add_collection3d(collection)
             
             # Plot sphere in RED (wireframe)
             center = approx['center']

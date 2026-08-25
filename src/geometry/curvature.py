@@ -1,8 +1,10 @@
 """Cálculo de curvatura en mallas triangulares."""
 
-import numpy as np
 from dataclasses import dataclass
+
+import numpy as np
 from scipy.spatial import cKDTree
+
 from .differential import DifferentialAnalyzer
 
 
@@ -31,11 +33,12 @@ class CurvatureCalculator:
         vertex_idx: int,
         vertices: np.ndarray,
         faces: np.ndarray,
-        normals: np.ndarray
+        normals: np.ndarray,
+        face_normals: bool = False,
     ) -> CurvatureData:
         """
         Calcula curvatura en un vértice de la malla.
-        
+
         Parameters
         ----------
         vertex_idx : int
@@ -45,23 +48,23 @@ class CurvatureCalculator:
         faces : np.ndarray
             Facetas (shape: (M, 3))
         normals : np.ndarray
-            Normales de la malla (shape: (N, 3))
-        
+            Normales de la malla: de vértice (shape: (N, 3)) por defecto,
+            o de faceta (shape: (M, 3)) si ``face_normals=True``
+        face_normals : bool
+            True si ``normals`` son normales de faceta y hay que promediarlas
+            a los vértices. Evita la ambigüedad cuando N == M.
+
         Returns
         -------
         CurvatureData
             Datos de curvatura (κ₁, κ₂, H, K)
-        
+
         Notes
         -----
-        Usar método de Meyer et al. (2003) para operadores discretos,
-        o ajuste local de superficie cuadrática.
-        
-        Referencias:
-        - Meyer, M., Desbrun, M., Schröder, P., Barr, A. H. (2003)
-          "Discrete Differential-Geometry Operators for Triangulated 2-Manifolds"
+        Se usa un ajuste local de superficie cuadrática (jet de orden 2) sobre
+        el vecindario del vértice para estimar la curvatura principal.
         """
-        vertex_normal = CurvatureCalculator._vertex_normals(vertices, faces, normals)[vertex_idx]
+        vertex_normal = CurvatureCalculator._vertex_normals(vertices, faces, normals, face_normals)[vertex_idx]
         neighbor_idx = CurvatureCalculator._vertex_neighbors(vertex_idx, faces)
         if len(neighbor_idx) < 6:
             tree = cKDTree(vertices)
@@ -122,11 +125,12 @@ class CurvatureCalculator:
     def compute_all_curvatures(
         vertices: np.ndarray,
         faces: np.ndarray,
-        normals: np.ndarray
+        normals: np.ndarray,
+        face_normals: bool = False,
     ) -> np.ndarray:
         """
         Calcula curvatura para todos los vértices.
-        
+
         Parameters
         ----------
         vertices : np.ndarray
@@ -134,15 +138,17 @@ class CurvatureCalculator:
         faces : np.ndarray
             Facetas
         normals : np.ndarray
-            Normales de vértices
-        
+            Normales de vértice (shape: (N, 3)) o de faceta (shape: (M, 3))
+        face_normals : bool
+            True si ``normals`` son normales de faceta.
+
         Returns
         -------
         np.ndarray
             Array con [k1, k2, H, K] para cada vértice
             shape: (N, 4)
         """
-        vertex_normals = CurvatureCalculator._vertex_normals(vertices, faces, normals)
+        vertex_normals = CurvatureCalculator._vertex_normals(vertices, faces, normals, face_normals)
         tree = cKDTree(vertices)
         result = np.zeros((len(vertices), 4), dtype=float)
 
@@ -268,17 +274,23 @@ class CurvatureCalculator:
         return np.setdiff1d(np.unique(touching), np.array([vertex_idx]))
 
     @staticmethod
-    def _vertex_normals(vertices: np.ndarray, faces: np.ndarray, normals: np.ndarray) -> np.ndarray:
+    def _vertex_normals(
+        vertices: np.ndarray,
+        faces: np.ndarray,
+        normals: np.ndarray,
+        face_normals: bool = False,
+    ) -> np.ndarray:
         """Promedia normales de facetas para obtener normales por vértice."""
-        if normals.shape == vertices.shape:
+        if not face_normals and np.asarray(normals).shape == np.asarray(vertices).shape:
+            normals = np.asarray(normals, dtype=float)
             lengths = np.linalg.norm(normals, axis=1)
             out = np.zeros_like(normals, dtype=float)
             valid = lengths > 1e-12
             out[valid] = normals[valid] / lengths[valid, None]
             return out
 
-        vertex_normals = np.zeros_like(vertices, dtype=float)
-        for face, normal in zip(faces, normals):
+        vertex_normals = np.zeros_like(np.asarray(vertices, dtype=float), dtype=float)
+        for face, normal in zip(faces, np.asarray(normals, dtype=float)):
             vertex_normals[face] += normal
         lengths = np.linalg.norm(vertex_normals, axis=1)
         valid = lengths > 1e-12

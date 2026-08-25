@@ -7,15 +7,16 @@ Este script muestra cómo usar el visualizador para graficar:
 - Múltiples aproximaciones comparativas
 """
 
-import numpy as np
 import sys
 from pathlib import Path
+
+import numpy as np
 
 # Añadir directorio src al path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.visualization.visualizer import Visualizer3D, InteractiveVisualizer
-from src.audit.trail import AuditTrail, AuditManager
+from src.audit.trail import AuditManager
+from src.visualization.visualizer import InteractiveVisualizer, Visualizer3D
 
 
 def demo_single_sphere_and_axis():
@@ -34,10 +35,10 @@ def demo_single_sphere_and_axis():
     center = np.array([10.0, 20.0, 30.0])
     radius = 25.0
     
-    print(f"\n✓ Graficando esfera:")
+    print("\n✓ Graficando esfera:")
     print(f"  Centro: {center}")
     print(f"  Radio: {radius} mm")
-    print(f"  Color: ROJO")
+    print("  Color: ROJO")
     
     viz.plot_sphere(center, radius, color='red', alpha=0.3)
     
@@ -46,11 +47,11 @@ def demo_single_sphere_and_axis():
     direction = np.array([0.0, 0.0, 1.0])
     length = 100.0
     
-    print(f"\n✓ Graficando eje longitudinal:")
+    print("\n✓ Graficando eje longitudinal:")
     print(f"  Origen (cabeza): {origin}")
     print(f"  Dirección: {direction}")
     print(f"  Longitud: {length} mm")
-    print(f"  Color: ROJO")
+    print("  Color: ROJO")
     
     viz.plot_axis(origin, direction, length, color='red', linewidth=3)
     
@@ -74,7 +75,7 @@ def demo_multiple_approximations():
     
     # Simular múltiples aproximaciones
     approximations = []
-    print(f"\n✓ Generando 5 aproximaciones de esferas:")
+    print("\n✓ Generando 5 aproximaciones de esferas:")
     
     for i in range(5):
         center = np.array([10.0, 20.0, 30.0]) + np.random.randn(3) * 0.5
@@ -89,11 +90,11 @@ def demo_multiple_approximations():
         print(f"  {i+1}. Centro: {center}, Radio: {radius:.2f} mm")
     
     # Graficar todas en ROJO
-    print(f"\n✓ Graficando esferas en COLOR ROJO")
+    print("\n✓ Graficando esferas en COLOR ROJO")
     viz.plot_approximations(approximations, color='red', alpha=0.2)
     
     # Graficar eje
-    print(f"✓ Graficando eje en COLOR ROJO")
+    print("✓ Graficando eje en COLOR ROJO")
     viz.plot_axis(
         np.array([10.0, 20.0, 30.0]),
         np.array([0.0, 0.0, 1.0]),
@@ -127,7 +128,7 @@ def demo_with_auditing():
     
     approximations = []
     
-    print(f"\n✓ Procesando 3 semillas:")
+    print("\n✓ Procesando 3 semillas:")
     
     for i in range(3):
         audit = manager.create_audit(f"seed_{i:03d}")
@@ -177,7 +178,7 @@ def demo_with_auditing():
     
     # Resumen
     summary = manager.get_summary()
-    print(f"\n✓ RESUMEN DE AUDITORÍA:")
+    print("\n✓ RESUMEN DE AUDITORÍA:")
     print(f"  Total de semillas: {summary['total_audits']}")
     print(f"  Aproximaciones válidas: {summary['valid_approximations']}")
     print(f"  Tasa de éxito: {summary['success_rate']*100:.1f}%")
@@ -227,7 +228,7 @@ def demo_comparison_view():
         'length': 80.0
     }
     
-    print(f"\n✓ Generando vista comparativa de 3 aproximaciones en ROJO")
+    print("\n✓ Generando vista comparativa de 3 aproximaciones en ROJO")
     
     fig = viz.create_comparison_view(
         mesh_data,
